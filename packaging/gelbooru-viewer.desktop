@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Gelbooru Viewer
+GenericName=Gelbooru browser
+Exec=gelbooru-viewer
+Icon=gelbooru-viewer
+Categories=Graphics;Network;
+Terminal=false
+StartupWMClass=com.desu.gelbooruviewer

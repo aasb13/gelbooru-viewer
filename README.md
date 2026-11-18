@@ -1,87 +1,38 @@
-# gelbooru-dux
+# Gelbooru Viewer
 
-A [Dux Shell](https://duxlabs.dev) (DMS) plugin that browses [Gelbooru](https://gelbooru.com). One composite plugin, several surfaces:
+A native desktop app for browsing [Gelbooru](https://gelbooru.com) — tag search, masonry thumbnail grid, lightbox viewing, rating filter. Built with [Tauri v2](https://tauri.app): Rust backend, web frontend.
 
-- **Its own window** — the viewer opens as a standard toplevel window, separate from the shell
-- **Dock / taskbar** — a pill icon in the dock that opens the viewer
-- **Applications browser** — an always-visible entry in the DMS launcher
-- **Clock popup (dash)** — a card in the dash Overview grid plus a full gallery tab; clicking the card opens the tab
-- **Control Center** — a tile that opens the gallery detail page (the closest surface to the user popup; DMS exposes no plugin hook for the user/session menu itself)
-
-The viewer talks to the Gelbooru JSON API (`dapi`): tag search, thumbnail grid, click-to-view, rating filter.
+- [DESIGN.md](DESIGN.md) is the UI/UX contract (screens, interactions, visual language).
 
 ## Features
 
-- Tag search — any tag combination works, including meta-tags like `rating:general`
-- Thumbnail grid with pagination
-- Click a post to view it at full size
-- Rating filter, defaulting to general (safe) content
-- Configurable auto-refresh
-- Settings panel integrated with Dux Shell settings, shared by every surface
+- Tag search with any site-valid query (negations, `sort:`, meta-tags) plus a searchable history
+- Masonry grid with natural aspect thumbnails and infinite scroll
+- Lightbox with sample/original toggle, zoom & pan, keyboard navigation (`←`/`→`/`j`/`k`), tag chips
+- Rating filter (defaults to General), always visible in the top bar
+- Image downloads, open-in-browser, clearable disk cache
+- Dark/light/system theme, remembered window geometry
 
 ## Requirements
 
-- Dux Shell (DMS) >= 1.7.0 — the dash surfaces require 1.7; hosting plugin widgets in docks requires 2.0
-- A Gelbooru account — the API rejects anonymous requests, its user ID and API key go in the plugin settings
-- Plugin permissions: `network` for the API and images, `settings_read`/`settings_write` for settings
+- A Gelbooru account: the API rejects anonymous requests, so the app asks for your numeric user ID and API key on first run (account settings → API on gelbooru.com)
+- Linux with WebKitGTK (the runtime Tauri uses; on Arch: `webkit2gtk-4.1`)
 
-## Install
-
-```bash
-git clone <this repo> ~/.config/dms/plugins/gelbooru-dux
-dms restart
-```
-
-Then: Settings → Plugins → **Scan for Plugins** → enable gelbooru-dux → `dms restart`.
-
-On NixOS the same install can be declared with the `programs.dux-shell.plugins` option.
-
-## Development
-
-Symlink the repo into the plugin directory and live-reload while editing:
+## Build & install
 
 ```bash
-ln -sf ~/path/to/gelbooru-dux ~/.config/dms/plugins/gelbooru-dux
-dms ipc call plugins reload gelbooruDux
+npm install
+npm run app:build        # release build + bundles in src-tauri/target/release
 ```
 
-Open the gallery tab directly:
+The release binary is `src-tauri/target/release/gelbooru-viewer`. For development with live reload:
 
 ```bash
-dms ipc call dash open plugin_gelbooruDux
+npm run app:dev
 ```
 
-To see load errors, run the shell from a terminal: `dms kill && dms run`.
+## How it talks to Gelbooru
 
-Note: brand-new QML files in an already-loaded plugin are not picked up by reload — `dms restart` after adding files.
-
-## Layout
-
-```
-plugin.json           composite manifest (component map)
-GelbooruDaemon.qml    persistent instance: owns the viewer window, the API client and shared state
-GelbooruWindow.qml    the viewer window (FloatingWindow)
-GelbooruGallery.qml   gallery UI shared by the window, the dash tab and future surfaces
-GelbooruPill.qml      bar/dock pill + Control Center tile (PluginComponent)
-GelbooruLauncher.qml  launcher entry
-GelbooruDashTab.qml   gallery tab in the dash (DashTabComponent)
-GelbooruDashCard.qml  card in the dash Overview grid (DashCardComponent)
-GelbooruSettings.qml  settings panel (PluginSettings)
-```
-
-## Configuration
-
-| Setting | Description | Default |
-|---|---|---|
-| Gelbooru user ID | Numeric account ID from gelbooru.com account settings | empty |
-| Gelbooru API key | Created under account settings > API on gelbooru.com | empty |
-| Rating filter | Which ratings the viewer may show; appended to the query | `general` |
-| Refresh interval | Minutes between automatic refreshes | 10 |
-| Grid columns | Thumbnails per row | 3 |
-
-## References
-
-- [DMS plugin development guide](https://duxlabs.dev/docs/dms/plugin-development)
-- [dux-shell repo](https://github.com/duxlabs-dev/dux-shell) (reference plugins under `quickshell/PLUGINS/`)
-- [Quickshell FloatingWindow](https://quickshell.org/docs/v0.3.0/types/Quickshell/FloatingWindow)
-- [Gelbooru dapi help](https://gelbooru.com/index.php?page=help&topic=dapi)
+- API: `page=dapi&s=post&q=index&json=1` with `user_id` + `api_key` on every request (anonymous requests get HTTP 401)
+- Images: gelbooru's image hosts require `Referer: https://gelbooru.com/` — the Rust backend downloads with that header into a disk cache (`~/.local/share/com.desu.gelbooruviewer/images/`), served to the UI over a custom `gvcache://` protocol
+- The rating filter is appended as a `rating:` tag for a single selection, and filtered client-side for multiple selections (duplicate `rating:` meta-tags AND to zero results)

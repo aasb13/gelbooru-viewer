@@ -1,0 +1,57 @@
+const SETTINGS_KEY = "gelbooru-viewer:settings";
+const HISTORY_KEY = "gelbooru-viewer:history";
+
+const DEFAULTS = {
+  userId: "",
+  apiKey: "",
+  ratings: ["general"],
+  columns: 3,
+  theme: "dark",
+  pageSize: 50,
+  rememberSearch: true,
+};
+
+export function loadSettings() {
+  let stored = {};
+  try {
+    stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+  } catch {
+    stored = {};
+  }
+  return { ...DEFAULTS, ...stored };
+}
+
+export function saveSettings(settings) {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+export function loadHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+export function pushHistory(query) {
+  if (!query) return;
+  const rest = loadHistory().filter((q) => q !== query);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify([query, ...rest].slice(0, 20)));
+}
+
+export function forgetHistoryItem(query) {
+  localStorage.setItem(
+    HISTORY_KEY,
+    JSON.stringify(loadHistory().filter((q) => q !== query)),
+  );
+}
+
+export function applyTheme(theme) {
+  const resolved =
+    theme === "system"
+      ? matchMedia("(prefers-color-scheme: light)").matches
+        ? "light"
+        : "dark"
+      : theme;
+  document.documentElement.dataset.theme = resolved;
+}
