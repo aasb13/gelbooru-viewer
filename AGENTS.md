@@ -10,18 +10,17 @@ One `composite` plugin. The `daemon` component is the persistent instance and ow
 
 **Shared state is `pluginData`** — it is reactive across all surfaces of a plugin (verified in the DashCounterExample, where a bar pill, a dash tab and a dash card share one counter through it). Writes go through `setData(key, value)` on surface components (`PluginComponent`, `DashTabComponent`, `DashCardComponent`) or `pluginService.savePluginData(pluginId, key, value)` where `setData` is unavailable (daemon, launcher). There is no other channel: no files, no direct JSON reads, no `PluginGlobalVar` unless a verified example shows it.
 
-Keys written by surfaces (all live in `pluginData`): `viewerOpen`, `query`, `page`, `fetchTick`, plus settings keys written by the settings UI (`userId`, `apiKey`, `ratingFilter`, `refreshInterval`, `gridColumns`). Keys written only by the daemon: `posts`, `totalPages`, `loading`. The daemon is the only fetcher for **API requests** — surfaces request work by bumping `fetchTick` / changing `query` / `page`; **image downloads** go through `GelbooruNet.js` (see below).
+Keys written by surfaces (all live in `pluginData`): `viewerOpen`, `query`, `page`, `fetchTick`, plus settings keys written by the settings UI (`userId`, `apiKey`, `ratingFilter`, `refreshInterval`, `gridColumns`). Keys written only by the daemon: `posts`, `totalPages`, `loading`. The daemon is the only fetcher for **API requests** — surfaces request work by bumping `fetchTick` / changing `query` / `page`; **image downloads** go through the inline fetchers (see below).
 
 ```
 plugin.json           composite manifest (component map)
 GelbooruDaemon.qml    daemon: viewer window lifecycle, API client
 GelbooruWindow.qml    viewer window (FloatingWindow)
-GelbooruGallery.qml   gallery UI shared by the window and the dash tab
-GelbooruNet.js        image loader: Referer header, data-URL conversion, shared cache
+GelbooruGallery.qml   gallery UI shared by the window and the dash tab; inline image fetcher
 GelbooruPill.qml      bar/dock pill + Control Center tile (PluginComponent)
 GelbooruLauncher.qml  launcher entry
 GelbooruDashTab.qml   gallery tab in the dash (DashTabComponent)
-GelbooruDashCard.qml  card in the dash Overview grid (DashCardComponent)
+GelbooruDashCard.qml  card in the dash Overview grid (DashCardComponent); inline image fetcher
 GelbooruSettings.qml  settings panel (PluginSettings)
 ```
 
@@ -75,8 +74,8 @@ Verified `Theme` properties in use: `floatingWindowSurface`, `hostSurface`, `chi
 - `safebooru.org` serves the same dapi anonymously, but returns a bare JSON array instead of `{"@attributes", "post"}` — the parser accepts both shapes.
 - With `json=1` on gelbooru.com, when exactly one post matches, `post` is a single object, not an array — normalize before use. `@attributes.count` (total matches) drives the page count.
 - Post fields used: `preview_url` (grid thumbnails), `file_url` (full-size view), `width`, `height`, `score`, `rating`, `tags` (space-separated).
-- The image hosts (`img*.gelbooru.com`) 302-redirect every request lacking `Referer: https://gelbooru.com/` to a hotlink-block page (verified 2026-11-19). QML `Image` cannot set request headers, so **all image loading goes through `GelbooruNet.js`**: XHR with the Referer header, `responseType: "arraybuffer"`, converted to a `data:image/jpeg;base64,…` data URL for `Image.source`. Never bind an `Image` straight to a gelbooru URL.
-- `GelbooruNet.js` is a `.pragma library` — its module state is shared by every surface in the engine (one download per URL), with a download throttle and a capped cache. Full-size `file_url` fetches pass `cacheable = false`; video files (mp4/webm/…) cannot render in `Image` — the detail view shows a placeholder instead.
+- The image hosts (`img*.gelbooru.com`) 302-redirect every request lacking `Referer: https://gelbooru.com/` to a hotlink-block page (verified 2026-11-19). QML `Image` cannot set request headers, so **all image loading goes through the inline fetchers** in `GelbooruGallery.qml` and `GelbooruDashCard.qml`: XHR with the Referer header, `responseType: "arraybuffer"`, converted to a `data:image/jpeg;base64,…` data URL for `Image.source`. Never bind an `Image` straight to a gelbooru URL.
+- Keep that logic **inline in the QML** — do not split it into a `.pragma library` JS file: external script imports from plugin QML failed in the running shell with `File name case mismatch` (observed 2026-11-19, plugin reload path). Full-size `file_url` fetches pass `cacheable = false`; video files (mp4/webm/…) cannot render in `Image` — the detail view shows a placeholder instead.
 - Tags are space-separated in the query string: encode each tag with `encodeURIComponent` and join with `+`.
 - Ratings are the meta-tags `rating:general`, `rating:sensitive`, `rating:questionable`, `rating:explicit` with rank order 0–3. The `ratingFilter` setting is appended to the query, default `general`, **and** enforced again client-side by rank — surfaces render on the desktop without prior interaction, so nothing above the filter may render anywhere, including the viewer window.
 

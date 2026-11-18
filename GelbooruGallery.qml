@@ -1,7 +1,6 @@
 import QtQuick
 import qs.Common
 import qs.DCommon.Widgets
-import "GelbooruNet.js" as Net
 
 Item {
     id: root
@@ -22,6 +21,11 @@ Item {
     property var detailCache: ({})
     property string detailSource: ""
     property bool detailIsVideo: false
+
+    property var _imageCache: ({})
+    property var _imageInflight: ({})
+    property var _imageQueue: []
+    property int _imageActive: 0
 
     readonly property int cellSize: Math.max(120, Math.floor((width - Theme.spacingS * Math.max(0, columns - 1)) / Math.max(1, columns)))
     readonly property int defaultRows: 3
@@ -56,9 +60,86 @@ Item {
     function requestThumb(url) {
         if (!url)
             return
-        Net.fetch(url, function(dataUrl) {
+        fetchImage(url, function(dataUrl) {
             root.store("thumbs", url, dataUrl)
         })
+    }
+
+    // The gelbooru image hosts 302-redirect every request without a gelbooru.com
+    // Referer to a hotlink-block page, and QML Image cannot set request headers:
+    // all images are fetched here and handed to Image.source as data URLs.
+    // This logic is deliberately inline — external .js imports from plugin QML
+    // fail in the running shell ("File name case mismatch", 2026-11-19).
+    function fetchImage(url, onDone, cacheable) {
+        if (!url) {
+            onDone("")
+            return
+        }
+        if (_imageCache[url] !== undefined) {
+            onDone(_imageCache[url])
+            return
+        }
+        if (_imageInflight[url] !== undefined) {
+            _imageInflight[url].push(onDone)
+            return
+        }
+        _imageInflight[url] = [onDone]
+        _imageQueue.push({
+            url: url,
+            cacheable: cacheable !== false
+        })
+        _pump()
+    }
+
+    function _pump() {
+        while (_imageActive < 8 && _imageQueue.length > 0) {
+            const item = _imageQueue.shift()
+            _imageActive++
+            _startImage(item.url, item.cacheable)
+        }
+    }
+
+    function _startImage(url, cacheable) {
+        const request = new XMLHttpRequest()
+        request.open("GET", url)
+        request.setRequestHeader("Referer", "https://gelbooru.com/")
+        request.responseType = "arraybuffer"
+        request.onreadystatechange = function() {
+            if (request.readyState !== 4)
+                return
+            _imageActive--
+            const waiters = _imageInflight[url] || []
+            delete _imageInflight[url]
+            let dataUrl = ""
+            if (request.status === 200) {
+                dataUrl = "data:image/jpeg;base64," + base64(new Uint8Array(request.response))
+                if (cacheable) {
+                    const keys = Object.keys(_imageCache)
+                    while (keys.length >= 256)
+                        delete _imageCache[keys.shift()]
+                    _imageCache[url] = dataUrl
+                }
+            }
+            for (let i = 0; i < waiters.length; i++)
+                waiters[i](dataUrl)
+            _pump()
+        }
+        request.send()
+    }
+
+    function base64(bytes) {
+        const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        let out = ""
+        for (let i = 0; i < bytes.length; i += 3) {
+            const b0 = bytes[i]
+            const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0
+            const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0
+            out += alphabet[b0 >> 2]
+            out += alphabet[((b0 & 3) << 4) | (b1 >> 4)]
+            out += i + 1 < bytes.length ? alphabet[((b1 & 15) << 2) | (b2 >> 6)] : "="
+            out += i + 2 < bytes.length ? alphabet[b2 & 63] : "="
+        }
+        return out
     }
 
     function store(mapName, url, dataUrl) {
@@ -85,7 +166,7 @@ Item {
             detailSource = detailCache[url]
             return
         }
-        Net.fetch(url, function(dataUrl) {
+        fetchImage(url, function(dataUrl) {
             if (!dataUrl)
                 return
             root.store("detailCache", url, dataUrl)
