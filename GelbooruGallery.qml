@@ -1,6 +1,7 @@
 import QtQuick
 import qs.Common
 import qs.DCommon.Widgets
+import "GelbooruNet.js" as Net
 
 Item {
     id: root
@@ -16,6 +17,11 @@ Item {
     property color baseColor: Theme.hostSurface
 
     property var selectedPost: null
+
+    property var thumbs: ({})
+    property var detailCache: ({})
+    property string detailSource: ""
+    property bool detailIsVideo: false
 
     readonly property int cellSize: Math.max(120, Math.floor((width - Theme.spacingS * Math.max(0, columns - 1)) / Math.max(1, columns)))
     readonly property int defaultRows: 3
@@ -45,6 +51,51 @@ Item {
             return
         mutate("page", clamped)
         mutate("fetchTick", fetchTick + 1)
+    }
+
+    function requestThumb(url) {
+        if (!url)
+            return
+        Net.fetch(url, function(dataUrl) {
+            root.store("thumbs", url, dataUrl)
+        })
+    }
+
+    function store(mapName, url, dataUrl) {
+        if (!url || !dataUrl)
+            return
+        const map = root[mapName]
+        if (map[url] === dataUrl)
+            return
+        const next = {}
+        for (const key in map)
+            next[key] = map[key]
+        next[url] = dataUrl
+        root[mapName] = next
+    }
+
+    onSelectedPostChanged: loadDetail(selectedPost ? (selectedPost.fileUrl ?? "") : "")
+
+    function loadDetail(url) {
+        detailSource = ""
+        detailIsVideo = /\.(mp4|webm|mov|mkv)(\?|$)/.test(url)
+        if (!url || detailIsVideo)
+            return
+        if (detailCache[url]) {
+            detailSource = detailCache[url]
+            return
+        }
+        Net.fetch(url, function(dataUrl) {
+            if (!dataUrl)
+                return
+            root.store("detailCache", url, dataUrl)
+            const keys = Object.keys(root.detailCache)
+            while (keys.length > 2) {
+                delete root.detailCache[keys.shift()]
+            }
+            if ((root.selectedPost ? (root.selectedPost.fileUrl ?? "") : "") === url)
+                root.detailSource = dataUrl
+        }, false)
     }
 
     Item {
@@ -156,16 +207,23 @@ Item {
             height: grid.cellHeight
 
             Image {
+                id: thumbImage
+
+                property string url: modelData && modelData.previewUrl ? modelData.previewUrl : ""
+
                 anchors.fill: parent
                 anchors.margins: Theme.spacingXS
                 asynchronous: true
-                source: modelData.previewUrl ?? ""
+                source: root.thumbs[thumbImage.url] ?? ""
                 fillMode: Image.PreserveAspectCrop
 
                 MouseArea {
                     anchors.fill: parent
                     onClicked: root.selectedPost = modelData
                 }
+
+                Component.onCompleted: root.requestThumb(thumbImage.url)
+                onUrlChanged: root.requestThumb(thumbImage.url)
             }
         }
     }
@@ -215,10 +273,19 @@ Item {
                 readonly property real aspect: (implicitWidth > 0 && implicitHeight > 0) ? implicitHeight / implicitWidth : 0
 
                 asynchronous: true
+                visible: !root.detailIsVideo
                 width: parent.width
                 height: aspect > 0 ? width * aspect : parent.height
-                source: root.selectedPost ? (root.selectedPost.fileUrl ?? "") : ""
+                source: root.detailSource
                 fillMode: Image.PreserveAspectFit
+            }
+
+            StyledText {
+                visible: root.detailIsVideo
+                anchors.centerIn: detailArea
+                text: "Video preview not supported"
+                color: Theme.onSurfaceVariant
+                font.pixelSize: Theme.fontSizeMedium
             }
         }
 
