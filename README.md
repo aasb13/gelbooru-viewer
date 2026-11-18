@@ -21,7 +21,7 @@ The viewer talks to the Gelbooru JSON API (`dapi`): tag search, thumbnail grid, 
 
 ## Requirements
 
-- Dux Shell (DMS) >= 2.0.0 — the dash/dashCard surfaces and dock widget hosting landed in 2.0
+- Dux Shell (DMS) >= 1.7.0 — the dash surfaces require 1.7; hosting plugin widgets in docks requires 2.0
 - Plugin permissions: `network` for the API and images, `settings_read`/`settings_write` for settings
 
 ## Install
@@ -41,13 +41,13 @@ Symlink the repo into the plugin directory and live-reload while editing:
 
 ```bash
 ln -sf ~/path/to/gelbooru-dux ~/.config/dms/plugins/gelbooru-dux
-dms ipc call plugins reload gelbooru-dux
+dms ipc call plugins reload gelbooruDux
 ```
 
 Open the gallery tab directly:
 
 ```bash
-dms ipc call dash open plugin_gelbooru-dux
+dms ipc call dash open plugin_gelbooruDux
 ```
 
 To see load errors, run the shell from a terminal: `dms kill && dms run`.
@@ -60,8 +60,9 @@ Note: brand-new QML files in an already-loaded plugin are not picked up by reloa
 plugin.json           composite manifest (component map)
 GelbooruDaemon.qml    persistent instance: owns the viewer window, the API client and shared state
 GelbooruWindow.qml    the viewer window (FloatingWindow)
+GelbooruGallery.qml   gallery UI shared by the window, the dash tab and future surfaces
 GelbooruPill.qml      bar/dock pill + Control Center tile (PluginComponent)
-GelbooruLauncher.qml  launcher entry (QtObject)
+GelbooruLauncher.qml  launcher entry
 GelbooruDashTab.qml   gallery tab in the dash (DashTabComponent)
 GelbooruDashCard.qml  card in the dash Overview grid (DashCardComponent)
 GelbooruSettings.qml  settings panel (PluginSettings)
@@ -71,7 +72,7 @@ GelbooruSettings.qml  settings panel (PluginSettings)
 
 | Setting | Description | Default |
 |---|---|---|
-| Tags | Tag query, any site-valid tags and meta-tags | `rating:general` |
+| Tags | Default tag query, any site-valid tags and meta-tags | empty |
 | Rating filter | Which ratings the viewer may show; appended to the query | `general` |
 | Refresh interval | Minutes between automatic refreshes | 10 |
 | Grid columns | Thumbnails per row | 3 |
