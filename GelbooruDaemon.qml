@@ -13,6 +13,8 @@ PluginComponent {
     readonly property bool loading: pluginData.loading ?? false
     readonly property int fetchTick: pluginData.fetchTick ?? 0
     readonly property string ratingFilter: pluginData.ratingFilter ?? "general"
+    readonly property string userId: pluginData.userId ?? ""
+    readonly property string apiKey: pluginData.apiKey ?? ""
     readonly property int refreshInterval: pluginData.refreshInterval ?? 10
     readonly property int gridColumns: pluginData.gridColumns ?? 3
     readonly property bool viewerOpen: pluginData.viewerOpen ?? false
@@ -65,13 +67,19 @@ PluginComponent {
 
     // The dapi caps limit at 100 posts per request (documented limit).
     function fetchPosts() {
-        const userTags = (query || (pluginData.tags ?? "")).trim()
+        if (userId.length === 0 || apiKey.length === 0) {
+            pluginService?.savePluginData(pluginId, "loading", false)
+            ToastService.showError("Gelbooru", "Add your Gelbooru user ID and API key in the plugin settings.")
+            return
+        }
+        const userTags = query.trim()
         const tagList = userTags.length > 0 ? userTags.split(/\s+/) : []
         if (ratingFilter.length > 0)
             tagList.push("rating:" + ratingFilter)
         const tagsParam = tagList.map(tag => encodeURIComponent(tag)).join("+")
         const url = "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&pid=" + page
             + (tagsParam.length > 0 ? "&tags=" + tagsParam : "")
+            + "&user_id=" + encodeURIComponent(userId) + "&api_key=" + encodeURIComponent(apiKey)
 
         pluginService?.savePluginData(pluginId, "loading", true)
         const seq = ++requestSeq
@@ -84,7 +92,9 @@ PluginComponent {
                 return
             if (request.status !== 200) {
                 pluginService?.savePluginData(pluginId, "loading", false)
-                ToastService.showError("Gelbooru", "Could not load posts — check your connection.")
+                ToastService.showError("Gelbooru", request.status === 401
+                    ? "Gelbooru rejected the API credentials — check them in the plugin settings."
+                    : "Could not load posts — check your connection.")
                 return
             }
 
@@ -98,7 +108,7 @@ PluginComponent {
             }
 
             const maxRank = ratingRanks[ratingFilter] ?? 0
-            const raw = parsed.post ?? []
+            const raw = Array.isArray(parsed) ? parsed : (parsed.post ?? [])
             const list = Array.isArray(raw) ? raw : (raw ? [raw] : [])
             const slim = []
             for (let i = 0; i < list.length; i++) {

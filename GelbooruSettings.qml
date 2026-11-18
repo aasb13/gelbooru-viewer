@@ -10,18 +10,34 @@ PluginSettings {
 
     StyledText {
         width: parent.width
-        text: "Search"
+        text: "Connection"
         font.pixelSize: Theme.fontSizeLarge
         font.weight: Theme.fontWeightMedium
         color: Theme.surfaceText
     }
 
     StringSetting {
-        settingKey: "tags"
-        label: "Tags"
-        description: "Default tag search used until you search for something else. Any tags valid on the site work, including meta-tags."
-        placeholder: "e.g. touhou"
+        settingKey: "userId"
+        label: "Gelbooru user ID"
+        description: "Your numeric account ID from gelbooru.com account settings. The API rejects all requests without credentials."
+        placeholder: "e.g. 12345"
         defaultValue: ""
+    }
+
+    StringSetting {
+        settingKey: "apiKey"
+        label: "Gelbooru API key"
+        description: "Create one under account settings > API on gelbooru.com."
+        placeholder: "API key"
+        defaultValue: ""
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Content"
+        font.pixelSize: Theme.fontSizeLarge
+        font.weight: Theme.fontWeightMedium
+        color: Theme.surfaceText
     }
 
     SelectionSetting {

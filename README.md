@@ -22,6 +22,7 @@ The viewer talks to the Gelbooru JSON API (`dapi`): tag search, thumbnail grid, 
 ## Requirements
 
 - Dux Shell (DMS) >= 1.7.0 — the dash surfaces require 1.7; hosting plugin widgets in docks requires 2.0
+- A Gelbooru account — the API rejects anonymous requests, its user ID and API key go in the plugin settings
 - Plugin permissions: `network` for the API and images, `settings_read`/`settings_write` for settings
 
 ## Install
@@ -72,7 +73,8 @@ GelbooruSettings.qml  settings panel (PluginSettings)
 
 | Setting | Description | Default |
 |---|---|---|
-| Tags | Default tag query, any site-valid tags and meta-tags | empty |
+| Gelbooru user ID | Numeric account ID from gelbooru.com account settings | empty |
+| Gelbooru API key | Created under account settings > API on gelbooru.com | empty |
 | Rating filter | Which ratings the viewer may show; appended to the query | `general` |
 | Refresh interval | Minutes between automatic refreshes | 10 |
 | Grid columns | Thumbnails per row | 3 |

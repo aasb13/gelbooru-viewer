@@ -10,7 +10,7 @@ One `composite` plugin. The `daemon` component is the persistent instance and ow
 
 **Shared state is `pluginData`** — it is reactive across all surfaces of a plugin (verified in the DashCounterExample, where a bar pill, a dash tab and a dash card share one counter through it). Writes go through `setData(key, value)` on surface components (`PluginComponent`, `DashTabComponent`, `DashCardComponent`) or `pluginService.savePluginData(pluginId, key, value)` where `setData` is unavailable (daemon, launcher). There is no other channel: no files, no direct JSON reads, no `PluginGlobalVar` unless a verified example shows it.
 
-Keys written by surfaces (all live in `pluginData`): `viewerOpen`, `query`, `page`, `fetchTick`, plus settings keys written by the settings UI (`tags`, `ratingFilter`, `refreshInterval`, `gridColumns`). Keys written only by the daemon: `posts`, `totalPages`, `loading`. The daemon is the only fetcher — surfaces request work by bumping `fetchTick` / changing `query` / `page`.
+Keys written by surfaces (all live in `pluginData`): `viewerOpen`, `query`, `page`, `fetchTick`, plus settings keys written by the settings UI (`userId`, `apiKey`, `ratingFilter`, `refreshInterval`, `gridColumns`). Keys written only by the daemon: `posts`, `totalPages`, `loading`. The daemon is the only fetcher — surfaces request work by bumping `fetchTick` / changing `query` / `page`.
 
 ```
 plugin.json           composite manifest (component map)
@@ -70,7 +70,9 @@ Verified `Theme` properties in use: `floatingWindowSurface`, `hostSurface`, `chi
 ## Gelbooru API
 
 - Endpoint: `https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1` with `tags`, `pid`, optional `limit`. `pid` is 0-based. `limit` is hard-capped at 100 posts per request (documented).
-- With `json=1`, the response is `{"@attributes": {...}, "post": [...]}`; when exactly one post matches, `post` is a single object, not an array — normalize before use. `@attributes.count` (total matches) drives the page count.
+- gelbooru.com requires credentials on every request: `&user_id=<numeric id>&api_key=<key>`. Anonymous requests return HTTP 401 (verified 2026-11-19). Both values are plugin settings (`userId`, `apiKey`); the daemon refuses to fetch without them. Never log or echo them.
+- `safebooru.org` serves the same dapi anonymously, but returns a bare JSON array instead of `{"@attributes", "post"}` — the parser accepts both shapes.
+- With `json=1` on gelbooru.com, when exactly one post matches, `post` is a single object, not an array — normalize before use. `@attributes.count` (total matches) drives the page count.
 - Post fields used: `preview_url` (grid thumbnails), `file_url` (full-size view), `width`, `height`, `score`, `rating`, `tags` (space-separated).
 - Tags are space-separated in the query string: encode each tag with `encodeURIComponent` and join with `+`.
 - Ratings are the meta-tags `rating:general`, `rating:sensitive`, `rating:questionable`, `rating:explicit` with rank order 0–3. The `ratingFilter` setting is appended to the query, default `general`, **and** enforced again client-side by rank — surfaces render on the desktop without prior interaction, so nothing above the filter may render anywhere, including the viewer window.
@@ -78,6 +80,7 @@ Verified `Theme` properties in use: `floatingWindowSurface`, `hostSurface`, `chi
 ## Verification
 
 - Live reload: `dms ipc call plugins reload gelbooruDux`; list loaded plugins with `dms ipc call plugins list`; open the dash tab with `dms ipc call dash open plugin_gelbooruDux`.
+- Syntax check with `/usr/lib/qt6/bin/qmllint` (6.x). The plain `qmllint` on PATH is Qt 5.15 and dies silently (exit 255, no output) on `?.` optional chaining — every surface file uses it. Unresolved `qs.*` import warnings are expected outside the shell runtime; only exit code and syntax errors matter.
 - Load failures: run `dms kill && dms run` from a terminal; check the component paths in `plugin.json` first.
 - Brand-new QML files in an already-loaded plugin directory are not picked up by reload — `dms restart` instead of debugging reload.
 - There is no headless check for QML rendering; a change is not done until every touched surface renders: the window, the pill in bar and dock (both orientations), the launcher entry, the dash card and tab, the Control Center tile.
