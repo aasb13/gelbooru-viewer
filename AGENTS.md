@@ -2,6 +2,15 @@
 
 Tauri v2 desktop app (Rust backend + vanilla JS web frontend) for browsing Gelbooru. [DESIGN.md](DESIGN.md) is the UI/UX contract — screens, interactions, states and visual language live there; keep implementation and design in sync, and update DESIGN.md when a behavior changes.
 
+## Agent image safety (critical)
+
+Z.ai's content filters can permanently lock the session if an NSFW image ever reaches the agent's view. The agent must never see images from this app unless one of exactly two conditions holds:
+
+- **No images at all**: verify UI through DOM/text only (query selectors, rendered text, element geometry), or with thumbnails hidden via CSS. This is the preferred mode.
+- **Safe-only enabled**: before any visual inspection (screenshot, reading rendered thumbnails, lightbox), set the rating filter to `general` only — which filters server-side via `rating:general` — and never open or view posts whose `rating` is not verified `general`. Never read files from the cache dir (`~/.local/share/com.desu.gelbooruviewer/images/`); `sensitive` is not safe.
+
+This applies to every tool that renders pixels into the conversation: screenshots, image reads, browser automation, and the running app window itself.
+
 ## Commands
 
 - `npm run build` — bundle the frontend (vite, output `dist/`)
