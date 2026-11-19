@@ -8,6 +8,7 @@ Tauri v2 desktop app (Rust backend + vanilla JS web frontend) for browsing Gelbo
 - `npm run app:build` — release build of the whole app (binary: `src-tauri/target/release/gelbooru-viewer`)
 - `npm run app:dev` — run with live reload (needs a display; spawns vite + the shell window)
 - `cargo build` inside `src-tauri/` — compile the backend only
+- Direct `cargo build --release` (without the Tauri CLI) **must** pass `--features custom-protocol`, otherwise the binary expects the dev server at `localhost:5173` and shows "connection refused" instead of the UI
 - Lint the frontend with `npx eslint` if configured — there is no linter config in this repo; verification is the builds plus manual UI testing
 
 ## Architecture
