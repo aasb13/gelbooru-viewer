@@ -1,6 +1,7 @@
 import { imageSrc } from "./api.js";
 
 const GAP = 8;
+export const DEFAULT_ASPECT = 0.75;
 
 export class MasonryGrid {
   constructor(container) {
@@ -12,6 +13,7 @@ export class MasonryGrid {
     this.onBrowser = null;
     this.onMenu = null;
     this.inflight = new Set();
+    this.lastLayoutWidth = 0;
 
     this.observer = new IntersectionObserver(
       (entries) => {
@@ -22,11 +24,13 @@ export class MasonryGrid {
       { rootMargin: "120% 0px" },
     );
 
-    let resizeTimer = null;
-    window.addEventListener("resize", () => {
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => this.layout(), 150);
+    // Re-layout whenever the container's width changes — the scrollbar
+    // appearing, a window resize, the area being unhidden. Height-only
+    // changes are ignored so layout-driven height updates cannot loop.
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.container.clientWidth !== this.lastLayoutWidth) this.layout();
     });
+    this.resizeObserver.observe(this.container);
   }
 
   setPosts(posts) {
@@ -88,7 +92,7 @@ export class MasonryGrid {
     });
 
     const ar =
-      post.width > 0 && post.height > 0 ? post.height / post.width : 0.75;
+      post.width > 0 && post.height > 0 ? post.height / post.width : DEFAULT_ASPECT;
     return { el, img, post, aspect: ar, loaded: false, failed: false };
   }
 
@@ -117,11 +121,20 @@ export class MasonryGrid {
       .finally(() => this.inflight.delete(post.id));
   }
 
-  layout() {
+  metrics() {
     const width = this.container.clientWidth || this.container.parentElement?.clientWidth || 0;
-    if (width <= 0) return;
     const n = Math.max(2, Math.min(6, this.columns));
-    const colWidth = Math.floor((width - GAP * (n - 1)) / n);
+    return { width, n, colWidth: Math.floor((width - GAP * (n - 1)) / n) };
+  }
+
+  columnWidth() {
+    return this.metrics().colWidth;
+  }
+
+  layout() {
+    const { width, n, colWidth } = this.metrics();
+    if (width <= 0) return;
+    this.lastLayoutWidth = width;
     const heights = new Array(n).fill(0);
     for (const post of this.posts) {
       const cell = this.cells.get(post.id);
@@ -133,9 +146,15 @@ export class MasonryGrid {
       const height = Math.round(colWidth * cell.aspect);
       const x = col * (colWidth + GAP);
       const y = heights[col];
-      cell.el.style.width = colWidth + "px";
-      cell.el.style.height = height + "px";
-      cell.el.style.transform = `translate(${x}px, ${y}px)`;
+      // Appends relayout the whole grid; skip cells whose geometry did not
+      // change instead of rewriting styles for every one of them.
+      const geom = `${colWidth}/${height}@${x}/${y}`;
+      if (cell.geom !== geom) {
+        cell.geom = geom;
+        cell.el.style.width = colWidth + "px";
+        cell.el.style.height = height + "px";
+        cell.el.style.transform = `translate(${x}px, ${y}px)`;
+      }
       heights[col] += height + GAP;
     }
     const tallest = Math.max(...heights, 0);

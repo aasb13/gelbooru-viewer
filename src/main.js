@@ -1,7 +1,7 @@
 import "./style.css";
 import { loadSettings, saveSettings, applyTheme, loadHistory, pushHistory, forgetHistoryItem } from "./state.js";
 import { fetchPosts, suggestTags, postUrl } from "./api.js";
-import { MasonryGrid } from "./grid.js";
+import { DEFAULT_ASPECT, MasonryGrid } from "./grid.js";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as lightbox from "./lightbox.js";
 import * as settingsPanel from "./settings.js";
@@ -140,11 +140,14 @@ function clearSkeletons() {
 
 function addSkeletons(count) {
   const holder = document.getElementById("skeletons");
+  // Match the real grid's column geometry so the loading state lines up
+  // with the cells that replace it.
+  const width = grid.columnWidth();
   for (let i = 0; i < count; i++) {
     const cell = document.createElement("div");
     cell.className = "cell skeleton";
-    cell.style.width = "240px";
-    cell.style.height = "320px";
+    cell.style.width = width + "px";
+    cell.style.height = Math.round(width * DEFAULT_ASPECT) + "px";
     holder.appendChild(cell);
     skeletons.push(cell);
   }

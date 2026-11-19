@@ -48,4 +48,5 @@ Backend commands (invoked from JS): `fetch_posts`, `download_image`, `download_f
 - Settings and search history live in localStorage (`gelbooru-viewer:*` keys); nothing is written outside the app-data dir.
 - Window geometry is persisted by `tauri-plugin-window-state`; capabilities in `src-tauri/capabilities/default.json` must list every plugin permission the frontend uses.
 - Rust commands do blocking HTTP inside `spawn_blocking`; never block the main thread.
+- Linux startup sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` before the webview exists: the WebKitGTK DMABUF renderer freezes the UI on focus changes (tauri issue #13498). Revisit only when WebKitGTK ships a fix.
 - Keep dependencies minimal: vanilla JS, no frontend framework.

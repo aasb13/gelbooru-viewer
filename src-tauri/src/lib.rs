@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -68,12 +68,22 @@ impl CmdError {
     }
 }
 
+// One client per runtime kind, reused for every request: a fresh client
+// drops the connection pool and pays a new TLS handshake per image.
+static HTTP_BLOCKING: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+static HTTP_ASYNC: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+
 fn http_client() -> Result<reqwest::blocking::Client, CmdError> {
-    reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| CmdError::new("internal", e.to_string()))
+    HTTP_BLOCKING
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .user_agent(USER_AGENT)
+                .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .clone()
+        .map_err(|e| CmdError::new("internal", e.clone()))
 }
 
 fn encode_token(token: &str) -> String {
@@ -374,12 +384,17 @@ fn validate_image_url(url: &str) -> Result<url::Url, CmdError> {
 // Media client: no total timeout (large videos), but connection and
 // idle-read limits so a stalled host surfaces as a network error.
 fn media_client() -> Result<reqwest::Client, CmdError> {
-    reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .connect_timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .read_timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| CmdError::new("internal", e.to_string()))
+    HTTP_ASYNC
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .connect_timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+                .read_timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .clone()
+        .map_err(|e| CmdError::new("internal", e.clone()))
 }
 
 #[derive(Clone, Debug)]
@@ -1317,6 +1332,13 @@ fn media_server_url(app: AppHandle) -> Result<String, CmdError> {
 }
 
 pub fn run() {
+    // The WebKitGTK DMABUF renderer freezes the UI on focus changes on common
+    // driver combinations (tauri issue #13498); force the shared-memory path.
+    #[cfg(target_os = "linux")]
+    {
+        // Read by WebKitGTK when the webview initializes; no thread exists yet.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
