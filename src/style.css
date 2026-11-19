@@ -26,6 +26,9 @@
 
 * { box-sizing: border-box; }
 
+/* keep the hidden attribute authoritative over any display rule below */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
