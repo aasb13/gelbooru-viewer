@@ -171,18 +171,24 @@ fn fetch_posts_blocking(
             "A Gelbooru user ID and API key are required.",
         ));
     }
-    let mut params: Vec<(String, String)> = vec![
-        ("pid".to_string(), page.to_string()),
-        ("limit".to_string(), limit.min(API_LIMIT_CAP).to_string()),
-        ("user_id".to_string(), user_id.trim().to_string()),
-        ("api_key".to_string(), api_key.trim().to_string()),
-    ];
+    // Build the query string manually: Url::parse_with_params would re-encode
+    // the already-escaped tags (">%25"), turning rating:general into a literal
+    // tag that matches nothing.
+    let mut url = format!(
+        "{API_BASE}&pid={page}&limit={}",
+        limit.min(API_LIMIT_CAP)
+    );
     if !tags.is_empty() {
         let encoded: Vec<String> = tags.iter().map(|t| encode_token(t.trim())).collect();
-        params.push(("tags".to_string(), encoded.join("+")));
+        url.push_str("&tags=");
+        url.push_str(&encoded.join("+"));
     }
-    let url = reqwest::Url::parse_with_params(API_BASE, &params)
-        .map_err(|e| CmdError::new("internal", e.to_string()))?;
+    url.push_str("&user_id=");
+    url.push_str(&encode_token(user_id.trim()));
+    url.push_str("&api_key=");
+    url.push_str(&encode_token(api_key.trim()));
+    let url =
+        url::Url::parse(&url).map_err(|e| CmdError::new("internal", e.to_string()))?;
 
     let response = http_client()?
         .get(url)

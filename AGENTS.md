@@ -27,7 +27,7 @@ Backend commands (invoked from JS): `fetch_posts`, `download_image`, `download_f
 
 ## Gelbooru facts (verified 2026-11-19)
 
-- API: `https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1` with `pid` (0-based), `limit` (hard cap 100), `tags` (space-separated → encode each token, join with `+`), plus `user_id` + `api_key` on **every** request — anonymous requests get HTTP 401.
+- API: `https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1` with `pid` (0-based), `limit` (hard cap 100), `tags` (space-separated → encode each token, join with `+`), plus `user_id` + `api_key` on **every** request — anonymous requests get HTTP 401. Build the query string manually and pass it to `Url::parse`: `parse_with_params` re-encodes `%` as `%25`, double-escaping pre-escaped tags into zero-result searches (observed 2026-11-19).
 - The `post` field is an array normally, a single object when exactly one post matches, absent when empty. `@attributes.count` drives the "load more" end condition.
 - Image hosts (`img*.gelbooru.com`) 302-redirect requests without `Referer: https://gelbooru.com/` to a hotlink-block page. **Qt/QML could never send this header; the Rust fetcher can** — every image download goes through `fetch_image_bytes` (Referer + UA + magic-byte validation so an HTML block page can never masquerade as an image).
 - Ratings: `general`/`sensitive`/`questionable`/`explicit` (rank 0–3); old numeric ratings are normalized in `normalize_rating`.
