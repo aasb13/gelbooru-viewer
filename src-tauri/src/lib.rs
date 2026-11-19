@@ -190,6 +190,13 @@ fn fetch_posts_blocking(
     let url =
         url::Url::parse(&url).map_err(|e| CmdError::new("internal", e.to_string()))?;
 
+    // Diagnostics for the session journal — credentials are masked, never logged.
+    let masked = url
+        .as_str()
+        .replace(api_key.trim(), "«key»")
+        .replace(user_id.trim(), "«id»");
+    eprintln!("[gelbooru] GET {masked}");
+
     let response = http_client()?
         .get(url)
         .send()
@@ -209,7 +216,18 @@ fn fetch_posts_blocking(
     let text = response
         .text()
         .map_err(|e| CmdError::new("network", e.to_string()))?;
-    parse_page(&text)
+    let parsed = parse_page(&text)?;
+    eprintln!(
+        "[gelbooru] status={} body_bytes={} total={} posts={}",
+        status,
+        text.len(),
+        parsed.total,
+        parsed.posts.len()
+    );
+    if parsed.posts.is_empty() {
+        eprintln!("[gelbooru] body head: {}", &text.chars().take(300).collect::<String>());
+    }
+    Ok(parsed)
 }
 
 #[tauri::command]

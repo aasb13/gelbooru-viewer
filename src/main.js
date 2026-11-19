@@ -8,6 +8,7 @@ import * as settingsPanel from "./settings.js";
 
 const el = {
   search: document.getElementById("search"),
+  searchWrap: document.getElementById("search-wrap"),
   searchClear: document.getElementById("search-clear"),
   historyBtn: document.getElementById("history-btn"),
   historyPop: document.getElementById("history-pop"),
@@ -370,7 +371,11 @@ lightbox.setTagHandler((e, tag) => {
 /* --- global listeners --- */
 
 document.addEventListener("click", (e) => {
-  if (!el.historyPop.hidden && !el.historyPop.contains(e.target) && e.target !== el.historyBtn) {
+  if (
+    !el.historyPop.hidden &&
+    !el.historyPop.contains(e.target) &&
+    !el.searchWrap.contains(e.target)
+  ) {
     el.historyPop.hidden = true;
   }
   if (!el.ratingPop.hidden && !el.ratingPop.contains(e.target) && e.target !== el.ratingChip) {
