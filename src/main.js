@@ -344,7 +344,7 @@ grid.onMenu = (post, x, y) => {
     ["Open in browser", () => grid.onBrowser(post)],
     ["Copy post URL", () => navigator.clipboard.writeText(
       `https://gelbooru.com/index.php?page=post&s=view&id=${post.id}`)],
-    ["Copy image URL", () => navigator.clipboard.writeText(post.file_url || post.preview_url)],
+    ["Copy image URL", () => navigator.clipboard.writeText(post.fileUrl || post.previewUrl)],
   ];
   for (const [label, action] of items) {
     const btn = document.createElement("button");

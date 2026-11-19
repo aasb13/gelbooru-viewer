@@ -64,15 +64,15 @@ function show(i) {
   resetZoom();
   renderInfo(post);
 
-  const isVideo = VIDEO_RE.test(post.file_url || "");
+  const isVideo = VIDEO_RE.test(post.fileUrl || "");
   el.videoNote.hidden = !isVideo;
   el.img.hidden = isVideo;
-  el.originalBtn.hidden = !post.sample_url;
+  el.originalBtn.hidden = !post.sampleUrl;
   el.spinner.hidden = false;
 
   const url = isVideo
     ? ""
-    : post.sample_url || post.file_url || "";
+    : post.sampleUrl || post.fileUrl || "";
   const token = ++loadToken;
   currentUrl = url;
 
@@ -104,7 +104,7 @@ function renderInfo(post) {
     `★ ${post.score.toLocaleString()}`,
     post.rating || "?",
     `${post.width}×${post.height}`,
-    post.created_at,
+    post.createdAt,
   ];
   const text = document.createElement("span");
   text.textContent = parts.join(" · ");
@@ -171,7 +171,7 @@ function setupEvents() {
     if (!post?.file_url) return;
     const token = ++loadToken;
     el.spinner.hidden = false;
-    imageSrc(post.file_url)
+    imageSrc(post.fileUrl)
       .then((src) => {
         if (token !== loadToken) return;
         resetZoom();
@@ -186,13 +186,13 @@ function setupEvents() {
   el.download.addEventListener("click", async () => {
     const post = current();
     if (!post?.file_url) return;
-    const ext = (post.file_url.match(/\.([a-z0-9]+)(\?|$)/i) || [])[1] || "jpg";
+    const ext = (post.fileUrl.match(/\.([a-z0-9]+)(\?|$)/i) || [])[1] || "jpg";
     const dest = await save({
       defaultPath: `${post.id}.${ext}`,
       filters: [{ name: "Image", extensions: [ext] }],
     });
     if (!dest) return;
-    await downloadToDisk(post.file_url, dest);
+    await downloadToDisk(post.fileUrl, dest);
   });
   el.img.addEventListener("dblclick", toggleZoom);
   el.img.addEventListener("wheel", (e) => {

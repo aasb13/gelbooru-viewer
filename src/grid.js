@@ -91,7 +91,7 @@ export class MasonryGrid {
   loadThumb(post) {
     const cell = this.cells.get(post.id);
     if (!cell || cell.loaded || cell.failed || this.inflight.has(post.id)) return;
-    const source = post.preview_url || post.file_url;
+    const source = post.previewUrl || post.fileUrl;
     if (!source) {
       cell.failed = true;
       cell.el.classList.add("error");
