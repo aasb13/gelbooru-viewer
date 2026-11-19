@@ -168,7 +168,7 @@ function setupEvents() {
   el.next.addEventListener("click", () => step(1));
   el.originalBtn.addEventListener("click", () => {
     const post = current();
-    if (!post?.file_url) return;
+    if (!post?.fileUrl) return;
     const token = ++loadToken;
     el.spinner.hidden = false;
     imageSrc(post.fileUrl)
@@ -185,7 +185,7 @@ function setupEvents() {
   el.browser.addEventListener("click", () => openInBrowser());
   el.download.addEventListener("click", async () => {
     const post = current();
-    if (!post?.file_url) return;
+    if (!post?.fileUrl) return;
     const ext = (post.fileUrl.match(/\.([a-z0-9]+)(\?|$)/i) || [])[1] || "jpg";
     const dest = await save({
       defaultPath: `${post.id}.${ext}`,
