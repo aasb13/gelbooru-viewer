@@ -158,7 +158,32 @@ fn parse_page(text: &str) -> Result<PageResult, CmdError> {
     Ok(PageResult { posts, total })
 }
 
+fn diag_log(app: &AppHandle, line: &str) {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("fetch.log");
+    let mut line = line.to_string();
+    if let Ok(meta) = fs::metadata(&path) {
+        if meta.len() > 256 * 1024 {
+            line.insert(0, '\n');
+        }
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    line.insert_str(0, &format!("[{stamp}] "));
+    let _ = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+}
+
 fn fetch_posts_blocking(
+    app: &AppHandle,
     user_id: &str,
     api_key: &str,
     tags: &[String],
@@ -190,12 +215,12 @@ fn fetch_posts_blocking(
     let url =
         url::Url::parse(&url).map_err(|e| CmdError::new("internal", e.to_string()))?;
 
-    // Diagnostics for the session journal — credentials are masked, never logged.
+    // Diagnostics — credentials are masked, never logged.
     let masked = url
         .as_str()
         .replace(api_key.trim(), "«key»")
         .replace(user_id.trim(), "«id»");
-    eprintln!("[gelbooru] GET {masked}");
+    diag_log(app, &format!("GET {masked}"));
 
     let response = http_client()?
         .get(url)
@@ -217,21 +242,26 @@ fn fetch_posts_blocking(
         .text()
         .map_err(|e| CmdError::new("network", e.to_string()))?;
     let parsed = parse_page(&text)?;
-    eprintln!(
-        "[gelbooru] status={} body_bytes={} total={} posts={}",
-        status,
-        text.len(),
-        parsed.total,
-        parsed.posts.len()
+    diag_log(
+        app,
+        &format!(
+            "status={} body_bytes={} total={} posts={}",
+            status,
+            text.len(),
+            parsed.total,
+            parsed.posts.len()
+        ),
     );
     if parsed.posts.is_empty() {
-        eprintln!("[gelbooru] body head: {}", &text.chars().take(300).collect::<String>());
+        let head: String = text.chars().take(300).collect();
+        diag_log(app, &format!("body head: {head}"));
     }
     Ok(parsed)
 }
 
 #[tauri::command]
 async fn fetch_posts(
+    app: AppHandle,
     user_id: String,
     api_key: String,
     tags: Vec<String>,
@@ -239,7 +269,7 @@ async fn fetch_posts(
     limit: u32,
 ) -> Result<PageResult, CmdError> {
     tauri::async_runtime::spawn_blocking(move || {
-        fetch_posts_blocking(&user_id, &api_key, &tags, page, limit)
+        fetch_posts_blocking(&app, &user_id, &api_key, &tags, page, limit)
     })
     .await
     .map_err(|e| CmdError::new("internal", e.to_string()))?
