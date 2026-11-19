@@ -522,11 +522,12 @@ document.addEventListener("click", (e) => {
 document.addEventListener("mousedown", (e) => {
   if (e.button === 3) {
     e.preventDefault();
-    if (lightbox.isOpen()) lightbox.close();
+    if (lightbox.isOpen()) lightbox.step(-1);
     else navigateHistory(-1);
   } else if (e.button === 4) {
     e.preventDefault();
-    if (!lightbox.isOpen()) navigateHistory(1);
+    if (lightbox.isOpen()) lightbox.step(1);
+    else navigateHistory(1);
   }
 });
 
