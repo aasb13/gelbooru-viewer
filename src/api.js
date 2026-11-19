@@ -36,6 +36,14 @@ export async function prepareMedia(url) {
   }
 }
 
+// Videos cannot load over gvcache:// — the webview's media stack bypasses
+// custom URI schemes on Linux — so they use the backend's loopback server.
+let mediaBasePromise = null;
+export function mediaBaseUrl() {
+  mediaBasePromise ??= invoke("media_server_url").catch(() => "");
+  return mediaBasePromise;
+}
+
 // Pure cache lookup — never starts a download.
 export async function cachedMedia(url) {
   try {

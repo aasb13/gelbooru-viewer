@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -1196,6 +1197,125 @@ async fn serve_cache_request(
     }
 }
 
+// Loopback server for media the webview cannot fetch over gvcache://: the
+// WebKitGTK media stack bypasses custom URI scheme handlers entirely (webkit
+// bug 146351), so <video> loads go to http://127.0.0.1/<token>/<name> instead.
+// The random per-session token keeps other local processes out of the cache.
+struct MediaServer {
+    base_url: String,
+}
+
+fn start_media_server(app: AppHandle) -> Result<MediaServer, CmdError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|e| CmdError::new("internal", e.to_string()))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| CmdError::new("internal", e.to_string()))?
+        .port();
+    let mut token_bytes = [0u8; 16];
+    getrandom::fill(&mut token_bytes).map_err(|e| CmdError::new("internal", e.to_string()))?;
+    let token: String = token_bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let base_url = format!("http://127.0.0.1:{port}/{token}");
+    let accept_app = app.clone();
+    let accept_token = token;
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            let app = accept_app.clone();
+            let token = accept_token.clone();
+            std::thread::spawn(move || handle_media_conn(stream, app, &token));
+        }
+    });
+    Ok(MediaServer { base_url })
+}
+
+fn handle_media_conn(stream: TcpStream, app: AppHandle, token: &str) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(60)));
+    let Ok(read_half) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(read_half).take(16 * 1024);
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).is_err() {
+        return;
+    }
+    // "GET /<token>/<name> HTTP/1.1"
+    let target = request_line.split_whitespace().nth(1).unwrap_or_default();
+    let name = match target.strip_prefix(&format!("/{token}/")) {
+        Some(name) if !name.is_empty() && !name.contains('/') => name,
+        _ => {
+            write_http_response(stream, not_found());
+            return;
+        }
+    };
+    let mut range = None;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        if let Some(value) = line.to_ascii_lowercase().strip_prefix("range:") {
+            range = Some(value.trim().to_string());
+        }
+    }
+    let mut builder = tauri::http::Request::builder().uri(format!("http://cache.local/{name}"));
+    if let Some(range) = &range {
+        builder = builder.header("Range", range);
+    }
+    let Ok(request) = builder.body(Vec::new()) else {
+        return;
+    };
+    let response = tauri::async_runtime::block_on(serve_cache_request(app, request));
+    write_http_response(stream, response);
+}
+
+fn write_http_response(mut stream: TcpStream, response: tauri::http::Response<Vec<u8>>) {
+    let reason = match response.status().as_u16() {
+        200 => "OK",
+        206 => "Partial Content",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        408 => "Request Timeout",
+        416 => "Range Not Satisfiable",
+        500 => "Internal Server Error",
+        _ => "Unknown",
+    };
+    let mut head = format!("HTTP/1.1 {} {reason}\r\n", response.status().as_u16());
+    for (name, value) in response.headers().iter() {
+        if name == tauri::http::header::CONTENT_LENGTH {
+            continue;
+        }
+        head.push_str(&format!(
+            "{}: {}\r\n",
+            name.as_str(),
+            String::from_utf8_lossy(value.as_bytes())
+        ));
+    }
+    let body = response.into_body();
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    ));
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&body);
+    let _ = stream.flush();
+}
+
+#[tauri::command]
+fn media_server_url(app: AppHandle) -> Result<String, CmdError> {
+    app.try_state::<MediaServer>()
+        .map(|server| server.base_url.clone())
+        .ok_or_else(|| CmdError::new("internal", "Media server unavailable."))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -1209,8 +1329,17 @@ pub fn run() {
             download_image,
             download_file,
             clear_cache,
-            suggest_tags
+            suggest_tags,
+            media_server_url
         ])
+        .setup(|app| {
+            // The webview's media element needs this before it can play; if the
+            // loopback port cannot be opened, videos simply report load errors.
+            if let Ok(server) = start_media_server(app.handle().clone()) {
+                app.manage(server);
+            }
+            Ok(())
+        })
         .register_asynchronous_uri_scheme_protocol("gvcache", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn(async move {

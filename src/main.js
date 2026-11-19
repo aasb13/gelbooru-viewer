@@ -249,6 +249,7 @@ function navigateHistory(delta, kinds) {
   pageIndex = target;
   const entry = pageStack[pageIndex];
   if (entry.kind === "grid") {
+    if (lightbox.isOpen()) lightbox.close();
     // Already showing this listing: keep it, scroll position included.
     if (entry.query !== query || gridQuery !== query || grid.posts.length === 0) {
       runSearch(entry.query, { fromNav: true });

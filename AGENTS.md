@@ -23,13 +23,13 @@ This applies to every tool that renders pixels into the conversation: screenshot
 ## Architecture
 
 ```
-src-tauri/src/lib.rs    all backend logic: API client, image fetcher, cache protocol
+src-tauri/src/lib.rs    all backend logic: API client, image fetcher, cache protocol, loopback media server
 src/main.js             app wiring: search, rating filter, banners, backoff, keyboard map
 src/grid.js             MasonryGrid: absolute-positioned masonry, IntersectionObserver thumbs
 src/lightbox.js         full-window overlay: sample/original, zoom/pan, tags, download
 src/settings.js         slide-over panel: account, content, view, behavior
 src/state.js            settings + search history in localStorage, theme resolution
-src/api.js              invoke wrappers; gvcache:// URL builder
+src/api.js              invoke wrappers; gvcache:// + loopback media server URL builders
 ```
 
 Backend commands (invoked from JS): `fetch_posts`, `download_image`, `download_file`, `clear_cache`. Errors are `{kind, detail}` objects — kinds: `auth`, `rate_limited`, `network`, `server`, `blocked`, `internal`. The UI maps `auth` → setup card, `rate_limited` → auto-backoff banner (30s doubling to 120s), everything else → inline banner.
@@ -44,7 +44,7 @@ Backend commands (invoked from JS): `fetch_posts`, `download_image`, `download_f
 
 ## Conventions
 
-- The UI never fetches images itself: it renders `gvcache://localhost/<name>` URLs produced by `download_image`. The custom protocol serves the app-data cache dir (`~/.local/share/com.desu.gelbooruviewer/images/`) and sanitizes file names — keep that sanitization.
+- The UI never fetches images itself: it renders `gvcache://localhost/<name>` URLs produced by `download_image`. Images load over that custom protocol; **videos** must load from the loopback HTTP server (`media_server_url` → `http://127.0.0.1:<port>/<token>/<name>`) because WebKitGTK's media stack bypasses custom URI scheme handlers (webkit bug 146351). Both serve the app-data cache dir (`~/.local/share/com.desu.gelbooruviewer/images/`) and sanitize file names — keep that sanitization.
 - Settings and search history live in localStorage (`gelbooru-viewer:*` keys); nothing is written outside the app-data dir.
 - Window geometry is persisted by `tauri-plugin-window-state`; capabilities in `src-tauri/capabilities/default.json` must list every plugin permission the frontend uses.
 - Rust commands do blocking HTTP inside `spawn_blocking`; never block the main thread.

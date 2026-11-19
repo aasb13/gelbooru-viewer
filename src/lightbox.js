@@ -1,4 +1,4 @@
-import { cachedMedia, downloadToDisk, onMediaProgress, postUrl, prepareMedia } from "./api.js";
+import { cachedMedia, downloadToDisk, mediaBaseUrl, onMediaProgress, postUrl, prepareMedia } from "./api.js";
 import { ratingBadge } from "./grid.js";
 import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -128,9 +128,11 @@ async function loadMedia(url, token, isVideo) {
   if (token !== loadToken) return;
   const src = "gvcache://localhost/" + prep.name;
   if (isVideo) {
-    // The protocol serves whatever prefix is on disk, so playback starts
-    // while the rest is still downloading.
-    el.video.src = src;
+    // Videos cannot use the cache protocol (the webview's media stack
+    // bypasses custom URI schemes); the loopback server serves whatever
+    // prefix is on disk, so playback starts while the rest downloads.
+    const base = await mediaBaseUrl();
+    el.video.src = base ? `${base}/${prep.name}` : "";
     el.video.hidden = false;
     el.spinner.hidden = true;
     el.video.play().catch(() => {});
