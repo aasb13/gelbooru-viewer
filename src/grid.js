@@ -30,7 +30,10 @@ export class MasonryGrid {
   }
 
   setPosts(posts) {
-    for (const cell of this.cells.values()) cell.el.remove();
+    for (const cell of this.cells.values()) {
+      this.observer.unobserve(cell.el);
+      cell.el.remove();
+    }
     this.cells.clear();
     this.posts = [];
     this.container.style.height = "0px";
@@ -57,18 +60,15 @@ export class MasonryGrid {
     const img = document.createElement("img");
     img.alt = "";
     img.decoding = "async";
-    img.addEventListener("click", () => this.onOpen?.(post));
     el.appendChild(img);
 
     const info = document.createElement("div");
     info.className = "hover-info";
-    const badge = document.createElement("span");
-    badge.className = "badge " + (post.rating || "x").charAt(0);
-    badge.textContent = (post.rating || "?").charAt(0).toUpperCase();
+    const badge = ratingBadge(post);
     const score = document.createElement("span");
     score.textContent = formatScore(post.score);
     const dims = document.createElement("span");
-    dims.textContent = `${post.width}×${post.height}`;
+    dims.textContent = post.width > 0 ? `${post.width}×${post.height}` : "";
     info.append(score, badge, dims);
     el.appendChild(info);
 
@@ -76,7 +76,11 @@ export class MasonryGrid {
       if (e.button === 1) this.onBrowser?.(post);
     });
     el.addEventListener("click", (e) => {
-      if (e.ctrlKey) this.onBrowser?.(post);
+      if (e.ctrlKey) {
+        this.onBrowser?.(post);
+        return;
+      }
+      this.onOpen?.(post);
     });
     el.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -103,6 +107,7 @@ export class MasonryGrid {
         cell.img.src = src;
         cell.loaded = true;
         cell.el.classList.remove("skeleton");
+        cell.el.classList.add("loaded");
       })
       .catch(() => {
         cell.failed = true;
@@ -141,4 +146,19 @@ export class MasonryGrid {
 function formatScore(score) {
   if (score >= 1000) return (score / 1000).toFixed(1) + "k";
   return String(score);
+}
+
+const RATING_LETTERS = {
+  general: "g",
+  sensitive: "s",
+  questionable: "q",
+  explicit: "e",
+};
+
+export function ratingBadge(post) {
+  const badge = document.createElement("span");
+  const letter = RATING_LETTERS[post.rating];
+  badge.className = "badge " + (letter || "x");
+  badge.textContent = letter ? letter.toUpperCase() : "?";
+  return badge;
 }

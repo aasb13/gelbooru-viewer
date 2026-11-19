@@ -8,24 +8,24 @@
 </head>
 <body>
   <header id="topbar">
+    <div class="topbar-spacer"></div>
     <div id="search-wrap">
       <input id="search" type="text" placeholder="Search tags" spellcheck="false" autocomplete="off" />
-      <button id="search-clear" class="icon-btn small" title="Clear search" hidden>✕</button>
-      <button id="history-btn" class="icon-btn small" title="Search history" hidden>▾</button>
+      <button id="search-clear" class="icon-btn small" title="Clear search" hidden><span class="ms">close</span></button>
+      <button id="history-btn" class="icon-btn small" title="Search history" hidden><span class="ms">history</span></button>
+      <div id="suggest-pop" class="popover" hidden></div>
       <div id="history-pop" class="popover" hidden></div>
     </div>
-    <div id="rating-wrap">
-      <button id="rating-chip" class="chip" title="Rating filter">G</button>
-      <div id="rating-pop" class="popover" hidden></div>
+    <div id="topbar-actions">
+      <button id="refresh-btn" class="icon-btn" title="Refresh"><span class="ms">refresh</span></button>
+      <button id="settings-btn" class="icon-btn" title="Settings"><span class="ms">settings</span></button>
     </div>
-    <button id="refresh-btn" class="icon-btn" title="Refresh">↻</button>
-    <button id="settings-btn" class="icon-btn" title="Settings">⚙</button>
   </header>
 
   <div id="banner" hidden>
     <span id="banner-text"></span>
     <button id="banner-retry" class="btn">Retry</button>
-    <button id="banner-close" class="icon-btn small">✕</button>
+    <button id="banner-close" class="icon-btn small"><span class="ms">close</span></button>
   </div>
 
   <main id="content">
@@ -36,10 +36,14 @@
         <li>Log in at gelbooru.com → Settings → API</li>
         <li>Create an API key, copy it and your user ID</li>
       </ol>
-      <label for="setup-user">User ID</label>
-      <input id="setup-user" type="text" spellcheck="false" autocomplete="off" />
-      <label for="setup-key">API key</label>
-      <input id="setup-key" type="password" spellcheck="false" autocomplete="off" />
+      <div class="field">
+        <label for="setup-user">User ID</label>
+        <div class="input-wrap"><span class="ms">person</span><input id="setup-user" type="text" spellcheck="false" autocomplete="off" /></div>
+      </div>
+      <div class="field">
+        <label for="setup-key">API key</label>
+        <div class="input-wrap"><span class="ms">key</span><input id="setup-key" type="password" spellcheck="false" autocomplete="off" /></div>
+      </div>
       <button id="setup-go" class="btn primary">Check &amp; start browsing</button>
       <p id="setup-msg" hidden></p>
     </div>
@@ -56,72 +60,84 @@
   </main>
 
   <div id="page-pill" hidden></div>
-  <button id="back-to-top" title="Back to top" hidden>↑</button>
+  <button id="back-to-top" title="Back to top" hidden><span class="ms">arrow_upward</span></button>
 
   <aside id="settings-panel" hidden>
     <div class="panel-head">
       <h2>Settings</h2>
-      <button id="settings-close" class="icon-btn">✕</button>
+      <button id="settings-close" class="icon-btn"><span class="ms">close</span></button>
     </div>
     <h3>Account</h3>
-    <label for="set-user">User ID</label>
-    <input id="set-user" type="text" spellcheck="false" autocomplete="off" />
-    <label for="set-key">API key</label>
-    <input id="set-key" type="password" spellcheck="false" autocomplete="off" />
+    <div class="field">
+      <label for="set-user">User ID</label>
+      <div class="input-wrap"><span class="ms">person</span><input id="set-user" type="text" spellcheck="false" autocomplete="off" /></div>
+    </div>
+    <div class="field">
+      <label for="set-key">API key</label>
+      <div class="input-wrap"><span class="ms">key</span><input id="set-key" type="password" spellcheck="false" autocomplete="off" /></div>
+    </div>
     <button id="check-conn" class="btn">Check connection</button>
     <span id="check-result"></span>
     <h3>Content</h3>
-    <div class="row" id="set-ratings">
-      <span class="muted">Ratings</span>
-      <label class="check"><input type="checkbox" value="general" /> General</label>
-      <label class="check"><input type="checkbox" value="sensitive" /> Sensitive</label>
-      <label class="check"><input type="checkbox" value="questionable" /> Questionable</label>
-      <label class="check"><input type="checkbox" value="explicit" /> Explicit</label>
+    <div class="set-block">
+      <span class="muted set-label">Ratings</span>
+      <div id="set-ratings" class="toggle-group">
+        <button type="button" class="toggle-chip" data-value="general" title="General">G</button>
+        <button type="button" class="toggle-chip" data-value="sensitive" title="Sensitive">S</button>
+        <button type="button" class="toggle-chip" data-value="questionable" title="Questionable">Q</button>
+        <button type="button" class="toggle-chip" data-value="explicit" title="Explicit">E</button>
+      </div>
     </div>
     <h3>View</h3>
-    <div class="row">
-      <span class="muted">Columns</span>
-      <input id="set-columns" type="range" min="2" max="6" step="1" />
-      <span id="set-columns-val"></span>
+    <div class="set-block">
+      <span class="muted set-label">Columns</span>
+      <div class="stepper">
+        <button type="button" id="set-columns-down" class="icon-btn small" title="Fewer columns"><span class="ms">remove</span></button>
+        <span id="set-columns-val">3</span>
+        <button type="button" id="set-columns-up" class="icon-btn small" title="More columns"><span class="ms">add</span></button>
+      </div>
     </div>
-    <div class="row">
-      <span class="muted">Theme</span>
-      <select id="set-theme">
-        <option value="dark">Dark</option>
-        <option value="light">Light</option>
-        <option value="system">System</option>
-      </select>
+    <div class="set-block">
+      <span class="muted set-label">Theme</span>
+      <div id="set-theme" class="segmented" role="group" aria-label="Theme">
+        <button type="button" data-value="dark">Dark</button>
+        <button type="button" data-value="light">Light</button>
+        <button type="button" data-value="system">System</button>
+      </div>
     </div>
     <h3>Behavior</h3>
-    <div class="row">
-      <span class="muted">Page size</span>
-      <select id="set-pagesize">
-        <option value="25">25</option>
-        <option value="50">50</option>
-        <option value="100">100</option>
-      </select>
+    <div class="set-block">
+      <span class="muted set-label">Page size</span>
+      <div id="set-pagesize" class="segmented" role="group" aria-label="Page size">
+        <button type="button" data-value="25">25</button>
+        <button type="button" data-value="50">50</button>
+        <button type="button" data-value="100">100</button>
+      </div>
     </div>
-    <label class="check row">
-      <input id="set-remember" type="checkbox" /> Remember last search
-    </label>
+    <div class="set-block switch-row">
+      <span class="muted set-label">Remember last search</span>
+      <button type="button" id="set-remember" class="switch" role="switch" aria-checked="false"><span class="knob"></span></button>
+    </div>
     <button id="clear-cache" class="btn danger">Clear image cache</button>
   </aside>
 
   <div id="lightbox" hidden>
     <div class="panel-head">
-      <button id="lb-back" class="icon-btn" title="Back (Esc)">←</button>
+      <button id="lb-back" class="icon-btn" title="Back (Esc)"><span class="ms">arrow_back</span></button>
       <span class="spacer"></span>
-      <button id="lb-browser" class="icon-btn" title="Open in browser (Ctrl+O)">↗</button>
-      <button id="lb-download" class="icon-btn" title="Download original">⭳</button>
+      <button id="lb-browser" class="icon-btn" title="Open in browser (Ctrl+O)"><span class="ms">open_in_new</span></button>
+      <button id="lb-download" class="icon-btn" title="Download original"><span class="ms">download</span></button>
       <button id="lb-original" class="btn" hidden>Original</button>
-      <button id="lb-close" class="icon-btn" title="Close (Esc)">✕</button>
+      <button id="lb-close" class="icon-btn" title="Close (Esc)"><span class="ms">close</span></button>
     </div>
     <div id="lb-stage">
+      <img id="lb-img-ghost" alt="" draggable="false" hidden />
       <img id="lb-img" alt="" draggable="false" />
-      <div id="lb-video-note" hidden>Video — open in browser</div>
+      <video id="lb-video" controls playsinline preload="metadata"></video>
+      <div id="lb-video-note" hidden></div>
       <div id="lb-spinner" class="spinner" hidden></div>
-      <button id="lb-prev" class="lb-nav" title="Previous (←)">‹</button>
-      <button id="lb-next" class="lb-nav" title="Next (→)">›</button>
+      <button id="lb-prev" class="lb-nav" title="Previous (←)"><span class="ms">chevron_left</span></button>
+      <button id="lb-next" class="lb-nav" title="Next (→)"><span class="ms">chevron_right</span></button>
     </div>
     <div id="lb-info">
       <div id="lb-metaline"></div>

@@ -1,6 +1,6 @@
 import "./style.css";
 import { loadSettings, saveSettings, applyTheme, loadHistory, pushHistory, forgetHistoryItem } from "./state.js";
-import { fetchPosts, RANKS } from "./api.js";
+import { fetchPosts, suggestTags, postUrl } from "./api.js";
 import { MasonryGrid } from "./grid.js";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as lightbox from "./lightbox.js";
@@ -12,8 +12,7 @@ const el = {
   searchClear: document.getElementById("search-clear"),
   historyBtn: document.getElementById("history-btn"),
   historyPop: document.getElementById("history-pop"),
-  ratingChip: document.getElementById("rating-chip"),
-  ratingPop: document.getElementById("rating-pop"),
+  suggestPop: document.getElementById("suggest-pop"),
   refresh: document.getElementById("refresh-btn"),
   settingsBtn: document.getElementById("settings-btn"),
   banner: document.getElementById("banner"),
@@ -43,7 +42,18 @@ let loading = false;
 let hasCredentials = false;
 let retryTimer = null;
 let backoffSeconds = 0;
+let failedPage = 0;
+let loadToken = 0;
 let skeletons = [];
+let suggestions = [];
+let activeSuggestion = -1;
+let suggestTimer = null;
+let suggestToken = 0;
+// Distinct from the search-history dropdown: a per-session back/forward stack
+// of searches, each remembering where in the grid the user had scrolled to.
+let navStack = [];
+let navIndex = -1;
+let galleryCursor = -1;
 
 const grid = new MasonryGrid(el.grid);
 
@@ -70,19 +80,6 @@ function ratingTokens() {
   return [];
 }
 
-function loosestRating() {
-  let loosest = "general";
-  for (const r of settings.ratings) {
-    if (RANKS[r] > RANKS[loosest]) loosest = r;
-  }
-  return loosest;
-}
-
-function updateRatingChip() {
-  el.ratingChip.textContent = loosestRating().charAt(0).toUpperCase();
-  el.ratingChip.title = "Ratings: " + settings.ratings.join(", ");
-}
-
 function updateSearchButtons() {
   el.searchClear.hidden = el.search.value.length === 0;
   el.historyBtn.hidden = el.search.value.length > 0;
@@ -106,7 +103,6 @@ function hideBanner() {
 
 function showError(error) {
   el.banner.hidden = false;
-  el.bannerRetry.hidden = false;
   if (error.kind === "auth") {
     el.bannerText.textContent = error.detail;
     showSetupCard(true);
@@ -122,10 +118,9 @@ function showError(error) {
 
 function tickBackoff() {
   el.banner.hidden = false;
-  el.bannerRetry.hidden = true;
   if (backoffSeconds <= 0) {
     hideBanner();
-    loadPage(page);
+    loadPage(failedPage);
     return;
   }
   el.bannerText.textContent = `Rate limited — retrying in ${backoffSeconds}s`;
@@ -150,12 +145,14 @@ function addSkeletons(count) {
   }
 }
 
-async function loadPage(pageIndex) {
-  if (loading) return;
+// A newer load supersedes an in-flight one: stale responses drop without
+// touching the UI. Returns the error on failure, null otherwise.
+async function loadPage(pageIndex, restoreScroll = 0) {
   if (!credentialsPresent()) {
     showSetupCard(true);
-    return;
+    return null;
   }
+  const token = ++loadToken;
   loading = true;
   hideBanner();
   if (pageIndex === 0) addSkeletons(Math.min(settings.pageSize, 12));
@@ -167,13 +164,14 @@ async function loadPage(pageIndex) {
       page: pageIndex,
       limit: settings.pageSize,
     });
+    if (token !== loadToken) return null;
     total = result.total;
     const filtered = filterByRatings(result.posts);
     emptyPagesStreak = filtered.length === 0 ? emptyPagesStreak + 1 : 0;
     if (pageIndex === 0) {
       clearSkeletons();
       grid.setPosts(filtered);
-      el.gridScroll.scrollTop = 0;
+      el.gridScroll.scrollTop = restoreScroll;
     } else {
       grid.append(filtered);
     }
@@ -186,22 +184,55 @@ async function loadPage(pageIndex) {
       setTimeout(() => (el.pagePill.hidden = true), 1500);
     }
     page = pageIndex;
+    return null;
   } catch (error) {
+    if (token !== loadToken) return null;
     clearSkeletons();
+    failedPage = pageIndex;
     showError(error);
+    return error;
   } finally {
-    loading = false;
+    if (token === loadToken) loading = false;
   }
 }
 
-function runSearch(text) {
+function saveNavPosition() {
+  if (navIndex >= 0 && navStack[navIndex]) {
+    navStack[navIndex].scrollTop = el.gridScroll.scrollTop;
+  }
+}
+
+function runSearch(text, { fromNav = false } = {}) {
   query = text.trim();
   tokens = query.split(/\s+/).filter(Boolean);
+  if (!fromNav) {
+    saveNavPosition();
+    navStack = navStack.slice(0, navIndex + 1);
+    navStack.push({ query, scrollTop: 0 });
+    navIndex = navStack.length - 1;
+  }
   if (query) pushHistory(query);
+  el.search.value = query;
+  updateSearchButtons();
   total = 0;
   emptyPagesStreak = 0;
+  galleryCursor = -1;
   hideBanner();
-  loadPage(0);
+  loadPage(0, fromNav ? navStack[navIndex]?.scrollTop || 0 : 0);
+}
+
+function canNavigate(delta) {
+  const target = navIndex + delta;
+  return target >= 0 && target < navStack.length;
+}
+
+function navigateHistory(delta) {
+  if (!canNavigate(delta)) return;
+  saveNavPosition();
+  navIndex += delta;
+  const entry = navStack[navIndex];
+  runSearch(entry.query, { fromNav: true });
+  el.gridScroll.scrollTop = entry.scrollTop || 0;
 }
 
 let emptyPagesStreak = 0;
@@ -214,18 +245,50 @@ function nextPage() {
 
 /* --- search + history --- */
 
-el.search.addEventListener("input", updateSearchButtons);
+el.search.addEventListener("input", () => {
+  el.historyPop.hidden = true;
+  updateSearchButtons();
+  scheduleSuggestions();
+});
 el.search.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" && !el.suggestPop.hidden && suggestions.length > 0) {
+    e.preventDefault();
+    activeSuggestion = (activeSuggestion + 1) % suggestions.length;
+    renderSuggestionActive();
+    return;
+  }
+  if (e.key === "ArrowUp" && !el.suggestPop.hidden && suggestions.length > 0) {
+    e.preventDefault();
+    activeSuggestion =
+      activeSuggestion <= 0 ? suggestions.length - 1 : activeSuggestion - 1;
+    renderSuggestionActive();
+    return;
+  }
+  if (e.key === "Tab" && !el.suggestPop.hidden && activeSuggestion >= 0) {
+    e.preventDefault();
+    applySuggestion(suggestions[activeSuggestion]);
+    return;
+  }
   if (e.key === "Enter") {
+    if (!el.suggestPop.hidden && activeSuggestion >= 0) {
+      e.preventDefault();
+      applySuggestion(suggestions[activeSuggestion]);
+      return;
+    }
+    hideSuggestions();
     runSearch(el.search.value);
     el.historyPop.hidden = true;
     el.search.blur();
   }
-  if (e.key === "Escape") el.search.blur();
+  if (e.key === "Escape") {
+    hideSuggestions();
+    el.search.blur();
+  }
 });
 el.searchClear.addEventListener("click", () => {
   el.search.value = "";
   updateSearchButtons();
+  hideSuggestions();
   el.search.focus();
 });
 el.historyBtn.addEventListener("click", (e) => {
@@ -234,7 +297,7 @@ el.historyBtn.addEventListener("click", (e) => {
   el.historyPop.hidden = !el.historyPop.hidden;
 });
 el.search.addEventListener("focus", () => {
-  if (loadHistory().length > 0) {
+  if (loadHistory().length > 0 && el.search.value.length === 0) {
     renderHistory();
     el.historyPop.hidden = false;
   }
@@ -256,8 +319,8 @@ function renderHistory() {
     const label = document.createElement("span");
     label.textContent = item;
     const forget = document.createElement("span");
-    forget.className = "muted";
-    forget.textContent = "✕";
+    forget.className = "ms muted";
+    forget.textContent = "close";
     forget.title = "Forget";
     forget.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -275,40 +338,91 @@ function renderHistory() {
   }
 }
 
-/* --- rating chip --- */
+/* --- tag suggestions --- */
 
-function renderRatingPop() {
-  el.ratingPop.innerHTML = "";
-  const head = document.createElement("div");
-  head.className = "pop-head";
-  head.textContent = "Show these ratings";
-  el.ratingPop.appendChild(head);
-  for (const rating of ["general", "sensitive", "questionable", "explicit"]) {
-    const label = document.createElement("label");
-    label.className = "pop-item";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.value = rating;
-    box.checked = settings.ratings.includes(rating);
-    box.addEventListener("change", () => {
-      const checked = [...el.ratingPop.querySelectorAll("input:checked")].map((b) => b.value);
-      settings.ratings = checked.length > 0 ? checked : ["general"];
-      saveSettings(settings);
-      updateRatingChip();
-      runSearch(query || el.search.value);
+// Suggest for the token currently being typed (the last space-separated word),
+// and replace only that token when one is chosen.
+function currentToken() {
+  const value = el.search.value;
+  const start = Math.max(value.lastIndexOf(" "), value.lastIndexOf("  ")) + 1;
+  return { start, text: value.slice(start) };
+}
+
+function hideSuggestions() {
+  el.suggestPop.hidden = true;
+  suggestions = [];
+  activeSuggestion = -1;
+}
+
+function scheduleSuggestions() {
+  clearTimeout(suggestTimer);
+  const { text } = currentToken();
+  if (!text || !credentialsPresent()) {
+    hideSuggestions();
+    return;
+  }
+  suggestTimer = setTimeout(loadSuggestions, 180);
+}
+
+async function loadSuggestions() {
+  const { text } = currentToken();
+  if (!text) return;
+  const token = ++suggestToken;
+  try {
+    const tags = await suggestTags({
+      userId: settings.userId,
+      apiKey: settings.apiKey,
+      prefix: text,
     });
-    const text = document.createElement("span");
-    text.textContent = rating.charAt(0).toUpperCase() + rating.slice(1);
-    label.append(text, box);
-    el.ratingPop.appendChild(label);
+    if (token !== suggestToken || currentToken().text !== text) return;
+    suggestions = tags;
+    activeSuggestion = -1;
+    renderSuggestions();
+  } catch {
+    // Autocomplete is best-effort; a failed lookup never blocks searching.
+    if (token === suggestToken) hideSuggestions();
   }
 }
 
-el.ratingChip.addEventListener("click", (e) => {
-  e.stopPropagation();
-  renderRatingPop();
-  el.ratingPop.hidden = !el.ratingPop.hidden;
-});
+function renderSuggestions() {
+  el.suggestPop.innerHTML = "";
+  if (suggestions.length === 0) {
+    hideSuggestions();
+    return;
+  }
+  suggestions.forEach((tag, i) => {
+    const row = document.createElement("button");
+    row.className = "pop-item suggestion-item";
+    row.dataset.index = String(i);
+    const name = document.createElement("span");
+    name.textContent = tag.name;
+    const count = document.createElement("span");
+    count.className = "s-count muted";
+    count.textContent = tag.count.toLocaleString();
+    row.append(name, count);
+    row.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      applySuggestion(tag);
+    });
+    el.suggestPop.appendChild(row);
+  });
+  el.suggestPop.hidden = false;
+}
+
+function renderSuggestionActive() {
+  const rows = el.suggestPop.querySelectorAll(".suggestion-item");
+  rows.forEach((row, i) => row.classList.toggle("active", i === activeSuggestion));
+}
+
+function applySuggestion(tag) {
+  const { start, text } = currentToken();
+  const quoted = /\s/.test(tag.name) ? `"${tag.name}"` : tag.name;
+  el.search.value =
+    el.search.value.slice(0, start) + quoted + el.search.value.slice(start + text.length);
+  updateSearchButtons();
+  hideSuggestions();
+  el.search.focus();
+}
 
 /* --- refresh / settings / lightbox wiring --- */
 
@@ -320,6 +434,9 @@ el.settingsBtn.addEventListener("click", (e) => {
 });
 
 settingsPanel.initSettings((updated) => {
+  const ratingsChanged =
+    updated.ratings.length !== settings.ratings.length ||
+    updated.ratings.some((r) => !settings.ratings.includes(r));
   settings = updated;
   hasCredentials = credentialsPresent();
   grid.columns = settings.columns;
@@ -329,21 +446,31 @@ settingsPanel.initSettings((updated) => {
   } else if (el.setupCard.hidden === false) {
     showSetupCard(false);
     runSearch(query || el.search.value.trim());
+  } else if (ratingsChanged) {
+    runSearch(query);
   }
 });
 
+function openLightboxAt(index) {
+  galleryCursor = index;
+  lightbox.open(grid.posts, index, {
+    needMore: nextPage,
+    onClose: () => { galleryCursor = -1; },
+    onStep: (i) => { galleryCursor = i; },
+  });
+}
+
 grid.onOpen = (post) => {
-  lightbox.open(grid.posts, grid.posts.indexOf(post), { needMore: nextPage });
+  openLightboxAt(grid.posts.indexOf(post));
 };
 grid.onBrowser = (post) => {
-  openUrl(`https://gelbooru.com/index.php?page=post&s=view&id=${post.id}`);
+  openUrl(postUrl(post));
 };
 grid.onMenu = (post, x, y) => {
   el.contextMenu.innerHTML = "";
   const items = [
     ["Open in browser", () => grid.onBrowser(post)],
-    ["Copy post URL", () => navigator.clipboard.writeText(
-      `https://gelbooru.com/index.php?page=post&s=view&id=${post.id}`)],
+    ["Copy post URL", () => navigator.clipboard.writeText(postUrl(post))],
     ["Copy image URL", () => navigator.clipboard.writeText(post.fileUrl || post.previewUrl)],
   ];
   for (const [label, action] of items) {
@@ -384,19 +511,41 @@ document.addEventListener("click", (e) => {
   ) {
     el.historyPop.hidden = true;
   }
-  if (!el.ratingPop.hidden && !el.ratingPop.contains(e.target) && e.target !== el.ratingChip) {
-    el.ratingPop.hidden = true;
+  if (!el.suggestPop.hidden && !el.suggestPop.contains(e.target) && e.target !== el.search) {
+    hideSuggestions();
   }
   if (!el.contextMenu.hidden && !el.contextMenu.contains(e.target)) {
     el.contextMenu.hidden = true;
   }
 });
 
+document.addEventListener("mousedown", (e) => {
+  if (e.button === 3) {
+    e.preventDefault();
+    if (lightbox.isOpen()) lightbox.close();
+    else navigateHistory(-1);
+  } else if (e.button === 4) {
+    e.preventDefault();
+    if (!lightbox.isOpen()) navigateHistory(1);
+  }
+});
+
 document.addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+  if (e.altKey && e.key === "ArrowLeft") {
+    e.preventDefault();
+    navigateHistory(-1);
+    return;
+  }
+  if (e.altKey && e.key === "ArrowRight") {
+    e.preventDefault();
+    navigateHistory(1);
+    return;
+  }
   if (lightbox.isOpen()) {
-    if (e.key === "ArrowLeft" || e.key === "j") lightbox.step(-1);
-    if (e.key === "ArrowRight" || e.key === "k") lightbox.step(1);
-    if (e.key === "m") lightbox.toggleZoom();
+    if (e.key === "ArrowLeft" || e.key === "k" || e.key === "h" || e.key === "PageUp") lightbox.step(-1);
+    if (e.key === "ArrowRight" || e.key === "j" || e.key === "l" || e.key === "PageDown") lightbox.step(1);
+    if (e.key === "m") lightbox.toggleOriginal();
     if (e.key === "o" && e.ctrlKey) {
       e.preventDefault();
       lightbox.openInBrowser();
@@ -404,19 +553,38 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") lightbox.close();
     return;
   }
-  if (e.key === "/" && document.activeElement !== el.search) {
+  if ((e.key === "/" || (e.ctrlKey && e.key.toLowerCase() === "k")) && !typing) {
     e.preventDefault();
     el.search.focus();
     el.search.select();
   }
+  if (["ArrowLeft", "ArrowRight", "h", "l"].includes(e.key) && !typing) {
+    e.preventDefault();
+    const posts = grid.posts;
+    if (posts.length === 0) return;
+    const forward = e.key === "ArrowRight" || e.key === "l";
+    const start = galleryCursor < 0
+      ? (forward ? 0 : posts.length - 1)
+      : Math.max(0, Math.min(posts.length - 1, galleryCursor + (forward ? 1 : -1)));
+    openLightboxAt(start);
+  }
   if (e.key === "Escape") {
     el.historyPop.hidden = true;
-    el.ratingPop.hidden = true;
     el.contextMenu.hidden = true;
+    hideSuggestions();
     settingsPanel.hide();
   }
-  if (e.key === "Home") {
+  if (!typing && e.key === "Home") {
+    e.preventDefault();
     el.gridScroll.scrollTo({ top: 0 });
+  }
+  if (!typing && e.key === "PageDown") {
+    e.preventDefault();
+    el.gridScroll.scrollBy({ top: el.gridScroll.clientHeight * 0.9, behavior: "smooth" });
+  }
+  if (!typing && e.key === "PageUp") {
+    e.preventDefault();
+    el.gridScroll.scrollBy({ top: -el.gridScroll.clientHeight * 0.9, behavior: "smooth" });
   }
 });
 
@@ -427,6 +595,12 @@ el.gridScroll.addEventListener("scroll", () => {
 el.backToTop.addEventListener("click", () => {
   el.gridScroll.scrollTo({ top: 0 });
 });
+
+el.bannerRetry.addEventListener("click", () => {
+  hideBanner();
+  loadPage(failedPage);
+});
+el.bannerClose.addEventListener("click", hideBanner);
 
 new IntersectionObserver(
   (entries) => {
@@ -444,16 +618,19 @@ el.setupGo.addEventListener("click", async () => {
   settings.apiKey = el.setupKey.value.trim();
   saveSettings(settings);
   hasCredentials = credentialsPresent();
-  el.setupGo.disabled = true;
   el.setupMsg.hidden = false;
   el.setupMsg.className = "";
+  if (!hasCredentials) {
+    el.setupMsg.textContent = "Enter your user ID and API key.";
+    return;
+  }
+  el.setupGo.disabled = true;
   el.setupMsg.textContent = "Checking…";
-  try {
-    await loadPage(0);
-    el.setupMsg.hidden = true;
-  } catch (error) {
-    el.setupMsg.className = "";
+  const error = await loadPage(0);
+  if (error) {
     el.setupMsg.textContent = error.detail || "Connection failed.";
+  } else {
+    el.setupMsg.hidden = true;
   }
   el.setupGo.disabled = false;
 });
@@ -462,7 +639,6 @@ el.setupGo.addEventListener("click", async () => {
 
 applyTheme(settings.theme);
 grid.columns = settings.columns;
-updateRatingChip();
 updateSearchButtons();
 hasCredentials = credentialsPresent();
 
@@ -470,7 +646,9 @@ if (settings.rememberSearch) {
   el.search.value = el.search.value || localStorage.getItem("gelbooru-viewer:last-query") || "";
 }
 window.addEventListener("beforeunload", () => {
-  localStorage.setItem("gelbooru-viewer:last-query", el.search.value);
+  if (settings.rememberSearch) {
+    localStorage.setItem("gelbooru-viewer:last-query", el.search.value);
+  }
 });
 
 if (hasCredentials) {

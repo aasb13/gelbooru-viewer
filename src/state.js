@@ -52,12 +52,15 @@ export function forgetHistoryItem(query) {
   );
 }
 
+let currentTheme = "dark";
+const systemLight = matchMedia("(prefers-color-scheme: light)");
+systemLight.addEventListener("change", () => {
+  if (currentTheme === "system") applyTheme("system");
+});
+
 export function applyTheme(theme) {
+  currentTheme = theme;
   const resolved =
-    theme === "system"
-      ? matchMedia("(prefers-color-scheme: light)").matches
-        ? "light"
-        : "dark"
-      : theme;
+    theme === "system" ? (systemLight.matches ? "light" : "dark") : theme;
   document.documentElement.dataset.theme = resolved;
 }

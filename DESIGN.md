@@ -29,7 +29,7 @@ No routing, no pages to navigate between; the back gesture means "close the over
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│ [ 🔍 search: touhou -explicit            ▾ ]  [G ▾]  ↻   ⚙       │ top bar, 48px
+│ [ 🔍 search: touhou -explicit            ▾ ]          ↻   ⚙       │ top bar, 48px (search centered)
 ├────────────────────────────────────────────────────────────────────┤
 │ ┌────┐ ┌──────────┐ ┌────┐  ┌────────┐ ┌───┐                      │
 │ │    │ │          │ │    │  │        │ │   │                      │
@@ -49,14 +49,13 @@ No routing, no pages to navigate between; the back gesture means "close the over
 ```
 
 **Top bar** (fixed, 48px, same background as page):
-- **Search field** — takes any site-valid query verbatim (tags, `-negate`, `sort:`, meta-tags). Left icon; clear (✕) when non-empty; **▾** opens search history (last 20 queries, most recent first, persisted; click to re-run, ✕ per row to forget).
-- **Rating chip `[G ▾]`** — always visible, shows the *loosest* currently allowed rating. Opens a popover with four checkboxes (General / Sensitive / Questionable / Explicit); default only General. Multi-select is allowed; the mechanism that keeps it correct is in §7.
+- **Search field** — takes any site-valid query verbatim (tags, `-negate`, `sort:`, meta-tags). Left icon; clear (close icon) when non-empty; history icon opens search history (last 20 queries, most recent first, persisted; click to re-run, per-row icon to forget). Typing suggests matching tags from Gelbooru's tag API (prefix match, highest-count first) in a dropdown under the field; ↑/↓ or Tab/Enter picks one, and only the token being typed is replaced.
 - **Refresh** — re-fetches the current page(s) from page 0 of the current query.
-- **Settings** — opens the slide-over (§3.3).
+- **Settings** — opens the slide-over (§3.3). The rating filter lives there; the top bar carries no rating chip.
 
 **Grid** — masonry columns, natural aspect ratio per cell (2–6 columns, slider in settings, default 3). Cells:
 - Thumbnail = `preview_url` at native size, `border-radius: 8px`, 8px gutters.
-- Aspect ratio is reserved from post metadata (`preview_width/height`, falling back to full `width/height`) so images fill pre-sized boxes — **zero layout shift**.
+- Aspect ratio is reserved from post metadata (`width`/`height`) so images fill pre-sized boxes — **zero layout shift**.
 - **Hover overlay** (bottom gradient): score (e.g. `1.2k`), rating badge letter, resolution (`1600×1200`). Hidden when not hovered — the grid stays clean.
 - **Click** → lightbox. **Middle-click / Ctrl+click** → open the post on gelbooru.com in the browser. **Right-click** → context menu: Open in browser / Copy post URL / Copy image URL.
 
@@ -80,12 +79,12 @@ No routing, no pages to navigate between; the back gesture means "close the over
 ```
 
 - Opens as a full-window overlay over the grid; the grid keeps its scroll position underneath.
-- **Image**: the `sample_url` when the post has one, else `file_url` — fit to window. **Original** button swaps in `file_url` (full size); double-click toggles 100% zoom with drag-to-pan; mouse wheel scrolls normally when fit, zooms when at 100%.
+- **Image**: the `sample_url` when the post has one, else `file_url` — fit to window. **Original** button swaps in `file_url` (full size); double-click toggles 100% zoom with drag-to-pan; mouse wheel scrolls normally when fit, zooms when at 100%. A cached thumbnail/sample is shown immediately and the full-size image paints over it progressively as its download advances.
 - **Header row**: ← back (ESC), open in browser (↗), download (⭳ — save dialog, writes the original file), close (✕).
 - **Navigation**: ‹ › hover zones on the edges + `←`/`→`/`j`/`k` step through the current result list; the info line updates in place. Reaching the end of the loaded list fetches the next page automatically.
 - **Info line**: score, rating badge, dimensions, date; **[Original]** toggle when a sample exists.
 - **Tags** as chips (flat list; the API provides no type grouping). **Click** = search that tag; **Ctrl+click** = append to the current query; **Shift+click** = append negated (`-tag`).
-- Video posts (`mp4/webm/mov`): image area shows "Video — open in browser" with the ↗ action; no playback in v1.
+- Video posts (`mp4/webm/mov/mkv/m4v`): played in the lightbox with native controls (the original/sample toggle does not apply). Playback starts while the file is still downloading.
 
 ### 3.3 Settings (slide-over, right side, 360px)
 
@@ -107,7 +106,7 @@ No routing, no pages to navigate between; the back gesture means "close the over
                               └──────────────────────────┘
 ```
 
-Changes apply live; everything persists locally. "Check connection" runs a 1-post API request and shows ✓ ok / the error inline. Theme: dark (default) / light / follow system.
+Changes apply live; everything persists locally. "Check connection" runs a 1-post API request and shows ✓ ok / the error inline. Controls are custom-styled — rating toggle chips, a columns stepper, segmented theme/page-size groups and a switch, plus icon-prefixed fields — no native checkboxes, selects or range sliders. Ratings default to General and at least one must stay selected.
 
 ### 3.4 First-run setup card
 
@@ -137,13 +136,17 @@ Success → card collapses and the grid loads with the default query. Failure (4
 | `/` or `Ctrl+K` | anywhere | focus search field |
 | `Enter` | search field | run search (page 0) |
 | `ESC` | lightbox / settings / popover | close it |
-| `←` `→` or `j` `k` | lightbox | previous / next post |
+| `←` `k` `h` / `→` `j` `l` | lightbox | previous / next post |
 | `m` | lightbox | toggle original / sample |
 | `Ctrl+O` | lightbox | open post in browser |
+| `←` `→` `h` `l` | grid | open lightbox at previous / next post |
+| `PageUp` / `PageDown` | grid | scroll one screen |
+| `Alt+←` / `Alt+→` | anywhere | back / forward in search history |
 | Middle-click / `Ctrl+click` | grid cell | open post in browser |
 | Click / `Ctrl+click` / `Shift+click` | tag chip | search tag / append / append negated |
 | `↑` button / `Home` | grid | back to top |
-| Mouse back | lightbox | close (returns to grid) |
+| Mouse back | anywhere | close the lightbox; otherwise back in search history |
+| Mouse forward | grid | forward in search history |
 
 ## 5. Visual language
 
@@ -155,16 +158,17 @@ Success → card collapses and the grid loads with the default query. Failure (4
 
 ## 6. Components inventory
 
-`TopBar` · `SearchField` (with history popover) · `RatingChip` + popover · `MasonryGrid` · `PostCell` (thumbnail + hover overlay + context menu) · `SkeletonCell` · `Lightbox` · `InfoLine` · `TagChips` · `SettingsPanel` · `SetupCard` · `Banner` (error/rate-limit, inline, dismissible) · `PagePill` · `BackToTop`.
+`TopBar` · `SearchField` (with history + tag-suggestion popovers) · `MasonryGrid` · `PostCell` (thumbnail + hover overlay + context menu) · `SkeletonCell` · `Lightbox` · `InfoLine` · `TagChips` · `SettingsPanel` (custom rating toggles, stepper, segmented controls, switch, icon-prefixed fields) · `SetupCard` · `Banner` (error/rate-limit, inline, dismissible) · `PagePill` · `BackToTop`. Icons are a bundled Material Symbols variable font, rendered via ligatures (`.ms`); native checkboxes, selects and range sliders are not used.
 
 ## 7. Data behavior the UI depends on
 
 - **Pages**: dapi `page=dapi&s=post&q=index&json=1`, `limit` = page size (25/50/100, default 50, hard cap 100), `pid` = 0-based page index. Infinite scroll appends pages.
 - **Credentials**: `user_id` + `api_key` params on every request; 401 surfaces the setup card, never a silent failure.
 - **Rating filter**: one rating selected → appended as a `rating:` tag (server-side, exact). Multiple selected → requested **without** rating tags and filtered client-side by rating rank (general < sensitive < questionable < explicit), because duplicate `rating:` meta-tags AND to zero results.
-- **Images**: all gelbooru image hosts require `Referer: https://gelbooru.com/`; the Rust backend downloads with that header into a disk cache keyed by the URL's file name (`~/.local/state/gelbooru-viewer/cache/`), and the webview loads cached files through the asset protocol. Thumbnails (`preview_url`) are fetched eagerly per rendered row; full-size (`sample_url`/`file_url`) on demand. Failed downloads show an error tile, never a broken `<img>` icon.
+- **Images**: all gelbooru image hosts require `Referer: https://gelbooru.com/`; the Rust backend downloads with that header into a disk cache keyed by the URL's file name (`~/.local/share/com.desu.gelbooruviewer/images/`), and the webview loads cached files through the asset protocol. Downloads stream to disk: the cache name is returned before completion, the protocol serves ranged reads of the growing file (and waits for bytes past the frontier), and the UI receives progress events. Thumbnails (`preview_url`) are fetched eagerly per rendered row; full-size (`sample_url`/`file_url`) on demand, revealed progressively over the cached thumbnail. The first bytes are magic-checked before anything is written or served, so a hotlink-block page can never masquerade as media. Failed downloads show an error tile (grid) / error note with Retry (lightbox), never a broken `<img>` icon.
 - **Cache**: served-if-present, else download. No auto-pruning in v1; a "Clear image cache" entry lives at the bottom of Settings.
 - **429 / rate limit**: banner "Rate limited — retrying in Ns" with automatic exponential backoff; manual Retry always available.
+- **Tag suggestions**: dapi `s=tag&q=index&json=1` with `name_pattern=<prefix>%` (starts-with wildcard), `orderby=count&order=DESC`, limit 10, and the same credentials as post requests. Debounced per keystroke; the dropdown offers the last typed token only. A failed lookup is silent — searching is never blocked by autocomplete.
 
 ## 8. State matrix
 
@@ -172,7 +176,7 @@ Success → card collapses and the grid loads with the default query. Failure (4
 |---|---|---|---|
 | Grid | skeleton cells at known aspect | "No posts for this search" + hint | inline banner + Retry |
 | Credentials missing | — | setup card replaces grid | card shows the failure inline |
-| Lightbox image | spinner over reserved aspect box | — (post exists) | banner + Retry |
+| Lightbox image | cached thumb/sample immediately; full image reveals as it downloads | — (post exists) | error note + Retry |
 | Any API call | — | — | 401 → setup card; 429 → backoff banner; other → banner |
 
 ## 9. Window & integration
@@ -183,4 +187,4 @@ Success → card collapses and the grid loads with the default query. Failure (4
 
 ## 10. Deferred (not v1)
 
-Tag autocomplete (dapi `s=tag`), favorites/voting (account write API), blacklists, slideshow, safebooru.org as an alternate board, video playback, hover-play previews, download-all, per-tag saved searches. Named here so they're consciously out, not forgotten.
+Favorites/voting (account write API), blacklists, slideshow, safebooru.org as an alternate board, hover-play previews, download-all, per-tag saved searches. Named here so they're consciously out, not forgotten.
