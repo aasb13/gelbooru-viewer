@@ -49,11 +49,16 @@ let suggestions = [];
 let activeSuggestion = -1;
 let suggestTimer = null;
 let suggestToken = 0;
-// Distinct from the search-history dropdown: a per-session back/forward stack
-// of searches, each remembering where in the grid the user had scrolled to.
-let navStack = [];
-let navIndex = -1;
+// Per-session browsing history: every visited page — a listing or an image in
+// the lightbox — is an entry, traversed undo/redo style. Mouse back/forward
+// walk all of it; Alt+arrows walk listings only.
+let pageStack = [];
+let pageIndex = -1;
 let galleryCursor = -1;
+let restoreToken = 0;
+// Query the grid's posts actually belong to; lags `query` while a newer load
+// is in flight or has failed.
+let gridQuery = null;
 
 const grid = new MasonryGrid(el.grid);
 
@@ -184,6 +189,7 @@ async function loadPage(pageIndex, restoreScroll = 0) {
       setTimeout(() => (el.pagePill.hidden = true), 1500);
     }
     page = pageIndex;
+    gridQuery = query;
     return null;
   } catch (error) {
     if (token !== loadToken) return null;
@@ -196,20 +202,30 @@ async function loadPage(pageIndex, restoreScroll = 0) {
   }
 }
 
+function pushPage(entry) {
+  pageStack = pageStack.slice(0, pageIndex + 1);
+  pageStack.push(entry);
+  pageIndex = pageStack.length - 1;
+}
+
 function saveNavPosition() {
-  if (navIndex >= 0 && navStack[navIndex]) {
-    navStack[navIndex].scrollTop = el.gridScroll.scrollTop;
-  }
+  const entry = pageStack[pageIndex];
+  if (entry?.kind === "grid") entry.scrollTop = el.gridScroll.scrollTop;
 }
 
 function runSearch(text, { fromNav = false } = {}) {
   query = text.trim();
   tokens = query.split(/\s+/).filter(Boolean);
   if (!fromNav) {
-    saveNavPosition();
-    navStack = navStack.slice(0, navIndex + 1);
-    navStack.push({ query, scrollTop: 0 });
-    navIndex = navStack.length - 1;
+    // Re-running the visible query is a reload, not a navigation: keep the
+    // entry and the forward stack.
+    const top = pageStack[pageIndex];
+    if (top?.kind === "grid" && top.query === query) {
+      top.scrollTop = 0;
+    } else {
+      saveNavPosition();
+      pushPage({ kind: "grid", query, scrollTop: 0 });
+    }
   }
   if (query) pushHistory(query);
   el.search.value = query;
@@ -218,21 +234,42 @@ function runSearch(text, { fromNav = false } = {}) {
   emptyPagesStreak = 0;
   galleryCursor = -1;
   hideBanner();
-  loadPage(0, fromNav ? navStack[navIndex]?.scrollTop || 0 : 0);
+  return loadPage(0, fromNav ? pageStack[pageIndex]?.scrollTop || 0 : 0);
 }
 
-function canNavigate(delta) {
-  const target = navIndex + delta;
-  return target >= 0 && target < navStack.length;
-}
-
-function navigateHistory(delta) {
-  if (!canNavigate(delta)) return;
+// Back/forward over the page stack. `kinds` filters entries: mouse buttons
+// traverse everything, Alt+arrows skip image entries.
+function navigateHistory(delta, kinds) {
+  let target = pageIndex + delta;
+  while (target >= 0 && target < pageStack.length && !kinds.includes(pageStack[target].kind)) {
+    target += delta;
+  }
+  if (target < 0 || target >= pageStack.length) return;
   saveNavPosition();
-  navIndex += delta;
-  const entry = navStack[navIndex];
-  runSearch(entry.query, { fromNav: true });
-  el.gridScroll.scrollTop = entry.scrollTop || 0;
+  pageIndex = target;
+  const entry = pageStack[pageIndex];
+  if (entry.kind === "grid") {
+    // Already showing this listing: keep it, scroll position included.
+    if (entry.query !== query || gridQuery !== query || grid.posts.length === 0) {
+      runSearch(entry.query, { fromNav: true });
+    }
+    el.gridScroll.scrollTop = entry.scrollTop || 0;
+  } else {
+    restoreLightbox(entry);
+  }
+}
+
+// Reopen an image entry. If its listing is not the one on screen, load that
+// listing first; a superseded or failed load leaves the listing shown.
+async function restoreLightbox(entry) {
+  const token = ++restoreToken;
+  if (entry.query !== query) {
+    const error = await runSearch(entry.query, { fromNav: true });
+    if (error || token !== restoreToken) return;
+  }
+  const i = grid.posts.findIndex((p) => p.id === entry.postId);
+  if (i < 0) return;
+  openLightboxAt(i, { fromHistory: true });
 }
 
 let emptyPagesStreak = 0;
@@ -451,12 +488,24 @@ settingsPanel.initSettings((updated) => {
   }
 });
 
-function openLightboxAt(index) {
+function openLightboxAt(index, { fromHistory = false } = {}) {
   galleryCursor = index;
+  if (!fromHistory) {
+    saveNavPosition();
+    pushPage({ kind: "lightbox", query, postId: grid.posts[index].id });
+  }
   lightbox.open(grid.posts, index, {
     needMore: nextPage,
-    onClose: () => { galleryCursor = -1; },
+    onClose: () => {
+      galleryCursor = -1;
+      // The listing the lightbox returns to is a visited page too — unless
+      // the close rode along with a search, which pushed its own entry.
+      if (pageStack[pageIndex]?.kind === "lightbox") {
+        pushPage({ kind: "grid", query, scrollTop: el.gridScroll.scrollTop });
+      }
+    },
     onStep: (i) => { galleryCursor = i; },
+    onUserStep: (post) => pushPage({ kind: "lightbox", query, postId: post.id }),
   });
 }
 
@@ -522,12 +571,10 @@ document.addEventListener("click", (e) => {
 document.addEventListener("mousedown", (e) => {
   if (e.button === 3) {
     e.preventDefault();
-    if (lightbox.isOpen()) lightbox.step(-1);
-    else navigateHistory(-1);
+    navigateHistory(-1, ["grid", "lightbox"]);
   } else if (e.button === 4) {
     e.preventDefault();
-    if (lightbox.isOpen()) lightbox.step(1);
-    else navigateHistory(1);
+    navigateHistory(1, ["grid", "lightbox"]);
   }
 });
 
@@ -535,12 +582,12 @@ document.addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
   if (e.altKey && e.key === "ArrowLeft") {
     e.preventDefault();
-    navigateHistory(-1);
+    navigateHistory(-1, ["grid"]);
     return;
   }
   if (e.altKey && e.key === "ArrowRight") {
     e.preventDefault();
-    navigateHistory(1);
+    navigateHistory(1, ["grid"]);
     return;
   }
   if (lightbox.isOpen()) {
@@ -632,6 +679,7 @@ el.setupGo.addEventListener("click", async () => {
     el.setupMsg.textContent = error.detail || "Connection failed.";
   } else {
     el.setupMsg.hidden = true;
+    pushPage({ kind: "grid", query, scrollTop: 0 });
   }
   el.setupGo.disabled = false;
 });

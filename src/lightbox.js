@@ -31,6 +31,7 @@ let loadToken = 0;
 let needMore = null;
 let onClose = null;
 let onStep = null;
+let onUserStep = null;
 let pan = { x: 0, y: 0 };
 let showingOriginal = false;
 let mediaKind = "image";
@@ -51,6 +52,7 @@ export function open(posts, start, hooks) {
   needMore = hooks?.needMore ?? null;
   onClose = hooks?.onClose ?? null;
   onStep = hooks?.onStep ?? null;
+  onUserStep = hooks?.onUserStep ?? null;
   el.root.hidden = false;
   show(index);
 }
@@ -285,6 +287,7 @@ export function step(delta) {
     return;
   }
   show(target);
+  onUserStep?.(list[index]);
 }
 
 function resetZoom() {

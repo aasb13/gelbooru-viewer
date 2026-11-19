@@ -145,8 +145,8 @@ Success → card collapses and the grid loads with the default query. Failure (4
 | Middle-click / `Ctrl+click` | grid cell | open post in browser |
 | Click / `Ctrl+click` / `Shift+click` | tag chip | search tag / append / append negated |
 | `↑` button / `Home` | grid | back to top |
-| Mouse back | lightbox | previous post; otherwise back in search history |
-| Mouse forward | lightbox | next post; otherwise forward in search history |
+| Mouse back | anywhere | previous page in browsing history (listing or image) |
+| Mouse forward | anywhere | next page in browsing history, if any |
 
 ## 5. Visual language
 
