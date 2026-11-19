@@ -11,6 +11,8 @@ const DEFAULTS = {
   rememberSearch: true,
 };
 
+const VALID_RATINGS = ["general", "sensitive", "questionable", "explicit"];
+
 export function loadSettings() {
   let stored = {};
   try {
@@ -18,7 +20,11 @@ export function loadSettings() {
   } catch {
     stored = {};
   }
-  return { ...DEFAULTS, ...stored };
+  const merged = { ...DEFAULTS, ...stored };
+  if (!Array.isArray(merged.ratings)) merged.ratings = [...DEFAULTS.ratings];
+  merged.ratings = merged.ratings.filter((r) => VALID_RATINGS.includes(r));
+  if (merged.ratings.length === 0) merged.ratings = [...DEFAULTS.ratings];
+  return merged;
 }
 
 export function saveSettings(settings) {

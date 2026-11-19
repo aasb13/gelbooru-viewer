@@ -169,6 +169,7 @@ async function loadPage(pageIndex) {
     });
     total = result.total;
     const filtered = filterByRatings(result.posts);
+    emptyPagesStreak = filtered.length === 0 ? emptyPagesStreak + 1 : 0;
     if (pageIndex === 0) {
       clearSkeletons();
       grid.setPosts(filtered);
@@ -198,11 +199,15 @@ function runSearch(text) {
   tokens = query.split(/\s+/).filter(Boolean);
   if (query) pushHistory(query);
   total = 0;
+  emptyPagesStreak = 0;
   hideBanner();
   loadPage(0);
 }
 
+let emptyPagesStreak = 0;
+
 function nextPage() {
+  if (emptyPagesStreak >= 2) return;
   const loaded = grid.posts.length;
   if (total > 0 && loaded < total && !loading) loadPage(page + 1);
 }
@@ -283,6 +288,7 @@ function renderRatingPop() {
     label.className = "pop-item";
     const box = document.createElement("input");
     box.type = "checkbox";
+    box.value = rating;
     box.checked = settings.ratings.includes(rating);
     box.addEventListener("change", () => {
       const checked = [...el.ratingPop.querySelectorAll("input:checked")].map((b) => b.value);
