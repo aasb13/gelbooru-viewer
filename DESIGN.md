@@ -147,8 +147,7 @@ Success → card collapses and the grid loads with the default query. Failure (4
 | `↑` button / `Home` | grid | back to top |
 | Mouse back | anywhere | previous page in browsing history (listing or image) |
 | Mouse forward | anywhere | next page in browsing history, if any |
-| `Ctrl+-` / `Ctrl+=` / `Ctrl+0` | anywhere | page zoom out / in / reset |
-| `Ctrl+wheel` | anywhere | page zoom |
+| `Ctrl+-` / `Ctrl+=` | anywhere | smaller / larger grid thumbnails (column count) |
 
 ## 5. Visual language
 

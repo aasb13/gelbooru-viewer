@@ -590,6 +590,16 @@ document.addEventListener("keydown", (e) => {
     navigateHistory(1, ["grid"]);
     return;
   }
+  if (e.ctrlKey && (e.key === "=" || e.key === "+")) {
+    e.preventDefault();
+    settingsPanel.stepColumns(-1);
+    return;
+  }
+  if (e.ctrlKey && e.key === "-") {
+    e.preventDefault();
+    settingsPanel.stepColumns(1);
+    return;
+  }
   if (lightbox.isOpen()) {
     if (e.key === "ArrowLeft" || e.key === "k" || e.key === "h" || e.key === "PageUp") lightbox.step(-1);
     if (e.key === "ArrowRight" || e.key === "j" || e.key === "l" || e.key === "PageDown") lightbox.step(1);

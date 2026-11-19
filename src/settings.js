@@ -58,6 +58,10 @@ function setColumns(value) {
   persist();
 }
 
+export function stepColumns(delta) {
+  setColumns(settings.columns + delta);
+}
+
 export function initSettings(handler) {
   onChanged = handler;
   syncInputs();
