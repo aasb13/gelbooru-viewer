@@ -418,6 +418,7 @@ struct TaskInner {
     // hole and must never be served.
     tail_start: Option<u64>,
     tail_done: bool,
+    tail_failed: bool,
 }
 
 struct TaskShared {
@@ -434,6 +435,7 @@ impl TaskShared {
                 received: 0,
                 tail_start: None,
                 tail_done: false,
+                tail_failed: false,
             }),
             cond: Condvar::new(),
         }
@@ -688,7 +690,7 @@ fn is_video_name(name: &str) -> bool {
 
 // Fetch the file's tail into the sparse part file up front. A failed or
 // partial tail fetch only delays playback until the sequential pass covers
-// the same bytes.
+// the same bytes; the waiting tail branch is woken either way.
 async fn fetch_tail(
     parsed: url::Url,
     part_path: PathBuf,
@@ -696,48 +698,50 @@ async fn fetch_tail(
     total: u64,
     shared: Arc<TaskShared>,
 ) {
-    let client = match media_client() {
-        Ok(client) => client,
-        Err(_) => return,
-    };
-    let mut response = match client
-        .get(parsed)
-        .header(reqwest::header::REFERER, IMAGE_REFERER)
-        .header(reqwest::header::RANGE, format!("bytes={tail_start}-"))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(_) => return,
-    };
-    // A 200 means the host ignored the range; writing it at tail_start would
-    // put the wrong bytes in the file, so abort and let the sequential pass
-    // fill the tail instead.
-    if response.status().as_u16() != 206 {
-        return;
-    }
-    let mut file = match fs::OpenOptions::new().write(true).open(&part_path) {
-        Ok(file) => file,
-        Err(_) => return,
-    };
-    if file.seek(SeekFrom::Start(tail_start)).is_err() {
-        return;
-    }
-    let mut offset = tail_start;
-    loop {
-        match response.chunk().await {
-            Ok(Some(chunk)) => {
-                if file.write_all(&chunk).is_err() {
-                    return;
-                }
-                offset += chunk.len() as u64;
-            }
-            Ok(None) => break,
-            Err(_) => return,
+    let result: Result<(), ()> = async {
+        let client = media_client().map_err(|_| ())?;
+        let mut response = client
+            .get(parsed)
+            .header(reqwest::header::REFERER, IMAGE_REFERER)
+            .header(reqwest::header::RANGE, format!("bytes={tail_start}-"))
+            .send()
+            .await
+            .map_err(|_| ())?;
+        // A 200 means the host ignored the range; writing it at tail_start
+        // would put the wrong bytes in the file, so abort and let the
+        // sequential pass fill the tail instead.
+        if response.status().as_u16() != 206 {
+            return Err(());
         }
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(&part_path)
+            .map_err(|_| ())?;
+        file.seek(SeekFrom::Start(tail_start)).map_err(|_| ())?;
+        let mut offset = tail_start;
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    file.write_all(&chunk).map_err(|_| ())?;
+                    offset += chunk.len() as u64;
+                }
+                Ok(None) => break,
+                Err(_) => return Err(()),
+            }
+        }
+        if offset < total {
+            return Err(());
+        }
+        Ok(())
     }
-    if offset >= total {
-        shared.inner.lock().unwrap().tail_done = true;
+    .await;
+    {
+        let mut inner = shared.inner.lock().unwrap();
+        match result {
+            Ok(()) => inner.tail_done = true,
+            Err(()) => inner.tail_failed = true,
+        }
+        shared.cond.notify_all();
     }
 }
 
@@ -782,6 +786,29 @@ fn wait_for_bytes(
             .cond
             .wait_timeout_while(inner, deadline.saturating_duration_since(now), |g| {
                 matches!(g.status, TaskStatus::Running) && g.received < min_received
+            })
+            .unwrap();
+        inner = guard;
+    }
+}
+
+// Wait until the parallel tail fetch finishes (or fails) — without waiting
+// for the sequential download, which reaches the tail region last.
+fn wait_for_tail(shared: &Arc<TaskShared>, cap_secs: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(cap_secs);
+    let mut inner = shared.inner.lock().unwrap();
+    loop {
+        if inner.tail_done || inner.tail_failed || !matches!(inner.status, TaskStatus::Running) {
+            return inner.tail_done;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        let (guard, _) = shared
+            .cond
+            .wait_timeout_while(inner, deadline.saturating_duration_since(now), |g| {
+                !g.tail_done && !g.tail_failed && matches!(g.status, TaskStatus::Running)
             })
             .unwrap();
         inner = guard;
@@ -1151,12 +1178,23 @@ fn serve_file(path: &Path, name: &str, range: Option<ByteRange>) -> tauri::http:
 // get whatever prefix exists (the media stack re-requests as it consumes);
 // reads beyond the frontier wait for the bytes to land.
 async fn serve_live(
+    app: &AppHandle,
     name: &str,
     final_path: &Path,
     part_path: &Path,
     shared: Arc<TaskShared>,
     range: Option<ByteRange>,
 ) -> tauri::http::Response<Vec<u8>> {
+    // Serving-side failures never reach the download log; record them so a
+    // client-visible "failed" is always explainable from fetch.log.
+    let reject = |code: u16| {
+        diag_log(app, &format!("serve {code} \"{name}\" range={range:?}"));
+        if code == 404 {
+            not_found()
+        } else {
+            request_timeout()
+        }
+    };
     match range {
         // Plain loads cannot paint a partial image, so hold until whole.
         None => {
@@ -1168,8 +1206,8 @@ async fn serve_live(
             .unwrap_or(Err(()))
             {
                 Ok(TaskStatus::Done) => serve_file(final_path, name, None),
-                Ok(TaskStatus::Failed(_, _)) => not_found(),
-                _ => request_timeout(),
+                Ok(TaskStatus::Failed(_, _)) => reject(404),
+                _ => reject(408),
             }
         }
         Some(ByteRange::From { start, end }) => {
@@ -1180,8 +1218,8 @@ async fn serve_live(
             .await
             .unwrap_or(Err(()));
             match outcome {
-                Err(()) => request_timeout(),
-                Ok(TaskStatus::Failed(_, _)) => not_found(),
+                Err(()) => reject(408),
+                Ok(TaskStatus::Failed(_, _)) => reject(404),
                 Ok(TaskStatus::Done) => serve_file(final_path, name, range),
                 Ok(TaskStatus::Running) => {
                     let received = shared.inner.lock().unwrap().received as usize;
@@ -1200,7 +1238,7 @@ async fn serve_live(
                             slice,
                             Some(format!("bytes {start}-{served_end}/{total}")),
                         ),
-                        None => not_found(),
+                        None => reject(404),
                     }
                 }
             }
@@ -1214,10 +1252,10 @@ async fn serve_live(
             .unwrap_or(Err(()));
             let (status, total) = match outcome {
                 Ok(pair) => pair,
-                Err(()) => return request_timeout(),
+                Err(()) => return reject(408),
             };
             if matches!(status, TaskStatus::Failed(_, _)) {
-                return not_found();
+                return reject(404);
             }
             let total = match total {
                 Some(t) => t as usize,
@@ -1231,8 +1269,8 @@ async fn serve_live(
                     .unwrap_or(Err(()))
                     {
                         Ok(TaskStatus::Done) => return serve_file(final_path, name, range),
-                        Ok(TaskStatus::Failed(_, _)) => return not_found(),
-                        _ => return request_timeout(),
+                        Ok(TaskStatus::Failed(_, _)) => return reject(404),
+                        _ => return reject(408),
                     }
                 }
             };
@@ -1249,7 +1287,7 @@ async fn serve_live(
             .unwrap_or(Err(()))
             {
                 Ok(TaskStatus::Done) => serve_file(final_path, name, range),
-                Ok(TaskStatus::Failed(_, _)) => not_found(),
+                Ok(TaskStatus::Failed(_, _)) => reject(404),
                 Ok(TaskStatus::Running) => match read_slice(part_path, start, n) {
                     Some(slice) => cache_response(
                         206,
@@ -1257,9 +1295,9 @@ async fn serve_live(
                         slice,
                         Some(format!("bytes {start}-{}/{total}", total - 1)),
                     ),
-                    None => not_found(),
+                    None => reject(404),
                 },
-                Err(()) => request_timeout(),
+                Err(()) => reject(408),
             }
         }
     }
@@ -1301,9 +1339,12 @@ async fn serve_cache_request(
     match shared {
         Some(shared) => {
             let part_path = dir.join(partial_name(&sanitized));
-            serve_live(&sanitized, &final_path, &part_path, shared, range).await
+            serve_live(&app, &sanitized, &final_path, &part_path, shared, range).await
         }
-        None => not_found(),
+        None => {
+            diag_log(&app, &format!("serve 404 \"{}\" range={range:?} (no task)", sanitized));
+            not_found()
+        }
     }
 }
 
@@ -1397,7 +1438,7 @@ fn handle_media_conn(mut stream: TcpStream, app: AppHandle, token: &str) {
         .get(&name)
         .cloned();
     match shared {
-        Some(shared) => serve_media_partial(&stream, &dir, &name, range, shared),
+        Some(shared) => serve_media_partial(&stream, &app, &dir, &name, range, shared),
         None => {
             let _ = write_http_head(&stream, 404, "text/plain", 9, None);
             let _ = stream.write_all(b"not found");
@@ -1521,6 +1562,7 @@ fn serve_part_prefix(
 // the fetched tail are served; holes between them are never sent.
 fn serve_media_partial(
     mut stream: &TcpStream,
+    app: &AppHandle,
     dir: &Path,
     name: &str,
     range: Option<ByteRange>,
@@ -1528,7 +1570,13 @@ fn serve_media_partial(
 ) {
     let final_path = dir.join(name);
     let part_path = dir.join(partial_name(name));
+    // Serving-side failures never reach the download log; record them so a
+    // client-visible "failed" is always explainable from fetch.log.
+    let reject = |code: u16| {
+        diag_log(app, &format!("serve {code} \"{name}\" range={range:?}"));
+    };
     if matches!(shared.inner.lock().unwrap().status, TaskStatus::Failed(_, _)) {
+        reject(404);
         let _ = write_http_head(stream, 404, "text/plain", 9, None);
         let _ = stream.write_all(b"not found");
         return;
@@ -1539,11 +1587,13 @@ fn serve_media_partial(
         // response; the media stack continues with ranged requests.
         None => match wait_for_bytes(&shared, 1, RANGE_WAIT_SECS) {
             Err(()) => {
+                reject(408);
                 let _ = write_http_head(stream, 408, "text/plain", 25, None);
                 let _ = stream.write_all(b"download still in progress");
             }
             Ok(TaskStatus::Done) => complete(),
             Ok(TaskStatus::Failed(_, _)) => {
+                reject(404);
                 let _ = write_http_head(stream, 404, "text/plain", 9, None);
                 let _ = stream.write_all(b"not found");
             }
@@ -1555,6 +1605,7 @@ fn serve_media_partial(
                     // Without a known length no valid Content-Range exists.
                     Some(total) => serve_part_prefix(stream, &part_path, name, 0, received - 1, total),
                     None => {
+                        reject(408);
                         let _ = write_http_head(stream, 408, "text/plain", 25, None);
                         let _ = stream.write_all(b"download still in progress");
                     }
@@ -1564,24 +1615,46 @@ fn serve_media_partial(
         Some(ByteRange::From { start, end }) => {
             let start = start as u64;
             let end = end.map(|e| e as u64);
-            let snapshot = {
+            let (tail_start, tail_done, total) = {
                 let inner = shared.inner.lock().unwrap();
                 (inner.tail_start, inner.tail_done, inner.total)
             };
-            if let (Some(total), Some(tail_start), true) = (snapshot.2, snapshot.0, snapshot.1) {
-                if start >= tail_start {
-                    let end = end.unwrap_or(total - 1).min(total - 1).max(start);
-                    serve_part_prefix(stream, &part_path, name, start, end, total);
+            if let Some(total) = total {
+                if start >= total {
+                    let _ = write_http_head(
+                        stream,
+                        416,
+                        "text/plain",
+                        21,
+                        Some(format!("bytes */{total}")),
+                    );
+                    let _ = stream.write_all(b"range not satisfiable");
                     return;
+                }
+                // The tail fetch owns [tail_start, total): wait for it rather
+                // than for the sequential download, which gets there last.
+                if let Some(tail_start) = tail_start {
+                    if start >= tail_start {
+                        let done = tail_done || wait_for_tail(&shared, RANGE_WAIT_SECS);
+                        if done {
+                            let end = end.unwrap_or(total - 1).min(total - 1).max(start);
+                            serve_part_prefix(stream, &part_path, name, start, end, total);
+                            return;
+                        }
+                        // Tail fetch failed: the sequential pass still has to
+                        // reach these bytes.
+                    }
                 }
             }
             match wait_for_bytes(&shared, start + 1, RANGE_WAIT_SECS) {
                 Err(()) => {
+                    reject(408);
                     let _ = write_http_head(stream, 408, "text/plain", 25, None);
                     let _ = stream.write_all(b"download still in progress");
                 }
                 Ok(TaskStatus::Done) => complete(),
                 Ok(TaskStatus::Failed(_, _)) => {
+                    reject(404);
                     let _ = write_http_head(stream, 404, "text/plain", 9, None);
                     let _ = stream.write_all(b"not found");
                 }
@@ -1594,6 +1667,7 @@ fn serve_media_partial(
                             serve_part_prefix(stream, &part_path, name, start, received - 1, total)
                         }
                         None => {
+                            reject(408);
                             let _ = write_http_head(stream, 408, "text/plain", 25, None);
                             let _ = stream.write_all(b"download still in progress");
                         }
@@ -1607,6 +1681,7 @@ fn serve_media_partial(
             let (status, total) = match outcome {
                 Ok(pair) => pair,
                 Err(()) => {
+                    reject(408);
                     let _ = write_http_head(stream, 408, "text/plain", 25, None);
                     let _ = stream.write_all(b"download still in progress");
                     return;
@@ -1617,6 +1692,7 @@ fn serve_media_partial(
                 match wait_for_task(&shared, RANGE_WAIT_SECS) {
                     Ok(TaskStatus::Done) => complete(),
                     _ => {
+                        reject(404);
                         let _ = write_http_head(stream, 404, "text/plain", 9, None);
                         let _ = stream.write_all(b"not found");
                     }
@@ -1628,26 +1704,35 @@ fn serve_media_partial(
                 return;
             }
             if matches!(status, TaskStatus::Failed(_, _)) {
+                reject(404);
                 let _ = write_http_head(stream, 404, "text/plain", 9, None);
                 let _ = stream.write_all(b"not found");
                 return;
             }
-            let snapshot = {
+            let (tail_start, tail_done) = {
                 let inner = shared.inner.lock().unwrap();
                 (inner.tail_start, inner.tail_done)
             };
-            let tail_covered = matches!(snapshot.0, Some(ts) if snapshot.1 && n <= total - ts);
+            // The end of the file is exactly what the tail fetch downloads:
+            // wait for it instead of the sequential frontier, which arrives
+            // last. This is the request players use to reach MP4 metadata.
+            let tail_covered = matches!(tail_start, Some(ts) if n <= total - ts);
             if tail_covered {
-                serve_part_prefix(stream, &part_path, name, total - n, total - 1, total);
-                return;
+                let done = tail_done || wait_for_tail(&shared, RANGE_WAIT_SECS);
+                if done {
+                    serve_part_prefix(stream, &part_path, name, total - n, total - 1, total);
+                    return;
+                }
             }
             match wait_for_bytes(&shared, total - n + 1, RANGE_WAIT_SECS) {
                 Err(()) => {
+                    reject(408);
                     let _ = write_http_head(stream, 408, "text/plain", 25, None);
                     let _ = stream.write_all(b"download still in progress");
                 }
                 Ok(TaskStatus::Done) => complete(),
                 Ok(TaskStatus::Failed(_, _)) => {
+                    reject(404);
                     let _ = write_http_head(stream, 404, "text/plain", 9, None);
                     let _ = stream.write_all(b"not found");
                 }

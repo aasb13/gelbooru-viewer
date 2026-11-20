@@ -45,7 +45,7 @@ Backend commands (invoked from JS): `fetch_posts`, `download_image`, `download_f
 ## Conventions
 
 - The UI never fetches images itself: it renders `gvcache://localhost/<name>` URLs produced by `download_image`. Images load over that custom protocol; **videos** must load from the loopback HTTP server (`media_server_url` → `http://127.0.0.1:<port>/<token>/<name>`) because WebKitGTK's media stack bypasses custom URI scheme handlers (webkit bug 146351). Both serve the app-data cache dir (`~/.local/share/com.desu.gelbooruviewer/images/`) and sanitize file names — keep that sanitization.
-- Media downloads write into a pre-sized sparse part file; video downloads fetch the tail (moov) in parallel. Serving must never expose byte ranges that are not on disk — the space between the sequential prefix and the tail is a hole.
+- Media downloads write into a pre-sized sparse part file; video downloads fetch the tail (moov) in parallel. Serving must never expose byte ranges that are not on disk — the space between the sequential prefix and the tail is a hole. Tail-range requests wait on the tail fetch, not the sequential frontier. `fetch.log` records both download failures and serving-side 404/408s (`serve …` lines).
 - Settings and search history live in localStorage (`gelbooru-viewer:*` keys); nothing is written outside the app-data dir.
 - Window geometry is persisted by `tauri-plugin-window-state`; capabilities in `src-tauri/capabilities/default.json` must list every plugin permission the frontend uses.
 - Rust commands do blocking HTTP inside `spawn_blocking`; never block the main thread.
