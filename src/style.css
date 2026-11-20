@@ -606,6 +606,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-size: 15px;
   text-align: center;
 }
+/* Download progress sits above the bottom edge, clear of the spinner. */
+#lb-video-note.progress {
+  place-items: end center;
+  padding-bottom: 26px;
+}
 #lb-nav, .lb-nav {
   position: fixed;
   top: 50%;

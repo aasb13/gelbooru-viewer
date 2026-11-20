@@ -20,6 +20,10 @@ const HTTP_TIMEOUT_SECS: u64 = 20;
 // emitted to the UI.
 const DOWNLOAD_WAIT_SECS: u64 = 600;
 const RANGE_WAIT_SECS: u64 = 90;
+// Videos: the MP4 metadata box (moov) sits at the end of the file, so the
+// tail is fetched up front into the sparse part file — without it, playback
+// cannot start until the whole sequential download has finished.
+const TAIL_FETCH_BYTES: u64 = 2 * 1024 * 1024;
 const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(150);
 const API_LIMIT_CAP: u32 = 100;
 const RATING_ORDER: [(&str, i64); 4] = [
@@ -407,7 +411,13 @@ enum TaskStatus {
 struct TaskInner {
     status: TaskStatus,
     total: Option<u64>,
+    // Contiguous prefix [0, received) written by the sequential download.
     received: u64,
+    // The tail range [tail_start, total) is fetched in parallel; tail_done
+    // means those bytes are on disk. Everything else beyond `received` is a
+    // hole and must never be served.
+    tail_start: Option<u64>,
+    tail_done: bool,
 }
 
 struct TaskShared {
@@ -422,6 +432,8 @@ impl TaskShared {
                 status: TaskStatus::Running,
                 total: None,
                 received: 0,
+                tail_start: None,
+                tail_done: false,
             }),
             cond: Condvar::new(),
         }
@@ -555,7 +567,7 @@ async fn stream_download(
     parsed: &url::Url,
     name: &str,
     part_path: &Path,
-    shared: &TaskShared,
+    shared: &Arc<TaskShared>,
 ) -> Result<(), (String, String)> {
     let client =
         media_client().map_err(|e| (e.kind.clone(), e.detail.clone()))?;
@@ -585,6 +597,27 @@ async fn stream_download(
 
     let mut file = fs::File::create(part_path)
         .map_err(|e| ("internal".to_string(), e.to_string()))?;
+    if let Some(total) = response.content_length() {
+        // Pre-size the part file so the parallel tail fetch can write at its
+        // offsets while the sequential pass is still filling the front.
+        file.set_len(total)
+            .map_err(|e| ("internal".to_string(), e.to_string()))?;
+    }
+    if let Some(total) = response.content_length() {
+        if is_video_name(name) && total > TAIL_FETCH_BYTES * 2 {
+            let tail_start = total - TAIL_FETCH_BYTES;
+            {
+                let mut inner = shared.inner.lock().unwrap();
+                inner.tail_start = Some(tail_start);
+            }
+            let tail_shared = Arc::clone(shared);
+            let tail_part = part_path.to_path_buf();
+            let tail_parsed = parsed.clone();
+            tauri::async_runtime::spawn(async move {
+                fetch_tail(tail_parsed, tail_part, tail_start, total, tail_shared).await;
+            });
+        }
+    }
     // The magic-byte check gates every write: nothing lands on disk (or gets
     // served) until the head proves it is not the hotlink-block page.
     let mut head: Vec<u8> = Vec::with_capacity(16);
@@ -644,6 +677,68 @@ async fn stream_download(
     file.flush()
         .map_err(|e| ("internal".to_string(), e.to_string()))?;
     Ok(())
+}
+
+fn is_video_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    [".mp4", ".webm", ".mkv", ".mov", ".m4v"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+}
+
+// Fetch the file's tail into the sparse part file up front. A failed or
+// partial tail fetch only delays playback until the sequential pass covers
+// the same bytes.
+async fn fetch_tail(
+    parsed: url::Url,
+    part_path: PathBuf,
+    tail_start: u64,
+    total: u64,
+    shared: Arc<TaskShared>,
+) {
+    let client = match media_client() {
+        Ok(client) => client,
+        Err(_) => return,
+    };
+    let mut response = match client
+        .get(parsed)
+        .header(reqwest::header::REFERER, IMAGE_REFERER)
+        .header(reqwest::header::RANGE, format!("bytes={tail_start}-"))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => return,
+    };
+    // A 200 means the host ignored the range; writing it at tail_start would
+    // put the wrong bytes in the file, so abort and let the sequential pass
+    // fill the tail instead.
+    if response.status().as_u16() != 206 {
+        return;
+    }
+    let mut file = match fs::OpenOptions::new().write(true).open(&part_path) {
+        Ok(file) => file,
+        Err(_) => return,
+    };
+    if file.seek(SeekFrom::Start(tail_start)).is_err() {
+        return;
+    }
+    let mut offset = tail_start;
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if file.write_all(&chunk).is_err() {
+                    return;
+                }
+                offset += chunk.len() as u64;
+            }
+            Ok(None) => break,
+            Err(_) => return,
+        }
+    }
+    if offset >= total {
+        shared.inner.lock().unwrap().tail_done = true;
+    }
 }
 
 fn wait_for_task(shared: &Arc<TaskShared>, cap_secs: u64) -> Result<TaskStatus, ()> {
@@ -1244,7 +1339,7 @@ fn start_media_server(app: AppHandle) -> Result<MediaServer, CmdError> {
     Ok(MediaServer { base_url })
 }
 
-fn handle_media_conn(stream: TcpStream, app: AppHandle, token: &str) {
+fn handle_media_conn(mut stream: TcpStream, app: AppHandle, token: &str) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(60)));
     let Ok(read_half) = stream.try_clone() else {
@@ -1258,9 +1353,10 @@ fn handle_media_conn(stream: TcpStream, app: AppHandle, token: &str) {
     // "GET /<token>/<name> HTTP/1.1"
     let target = request_line.split_whitespace().nth(1).unwrap_or_default();
     let name = match target.strip_prefix(&format!("/{token}/")) {
-        Some(name) if !name.is_empty() && !name.contains('/') => name,
+        Some(name) if !name.is_empty() && !name.contains('/') => name.to_string(),
         _ => {
-            write_http_response(stream, not_found());
+            let _ = write_http_head(&stream, 404, "text/plain", 9, None);
+            let _ = stream.write_all(b"not found");
             return;
         }
     };
@@ -1276,52 +1372,292 @@ fn handle_media_conn(stream: TcpStream, app: AppHandle, token: &str) {
             break;
         }
         if let Some(value) = line.to_ascii_lowercase().strip_prefix("range:") {
-            range = Some(value.trim().to_string());
+            range = parse_byte_range(value.trim());
         }
     }
-    let mut builder = tauri::http::Request::builder().uri(format!("http://cache.local/{name}"));
-    if let Some(range) = &range {
-        builder = builder.header("Range", range);
-    }
-    let Ok(request) = builder.body(Vec::new()) else {
-        return;
+
+    let dir = match images_dir(&app) {
+        Ok(dir) => dir,
+        Err(_) => {
+            let _ = write_http_head(&stream, 404, "text/plain", 9, None);
+            let _ = stream.write_all(b"not found");
+            return;
+        }
     };
-    let response = tauri::async_runtime::block_on(serve_cache_request(app, request));
-    write_http_response(stream, response);
+    let final_path = dir.join(&name);
+    if final_path.exists() {
+        serve_media_file(&stream, &final_path, &name, range);
+        return;
+    }
+    let shared = app
+        .state::<MediaTasks>()
+        .tasks
+        .lock()
+        .unwrap()
+        .get(&name)
+        .cloned();
+    match shared {
+        Some(shared) => serve_media_partial(&stream, &dir, &name, range, shared),
+        None => {
+            let _ = write_http_head(&stream, 404, "text/plain", 9, None);
+            let _ = stream.write_all(b"not found");
+        }
+    }
 }
 
-fn write_http_response(mut stream: TcpStream, response: tauri::http::Response<Vec<u8>>) {
-    let reason = match response.status().as_u16() {
+fn write_http_head(
+    mut stream: &TcpStream,
+    status: u16,
+    mime: &str,
+    len: u64,
+    content_range: Option<String>,
+) -> std::io::Result<()> {
+    let reason = match status {
         200 => "OK",
         206 => "Partial Content",
-        304 => "Not Modified",
-        400 => "Bad Request",
-        403 => "Forbidden",
         404 => "Not Found",
         408 => "Request Timeout",
         416 => "Range Not Satisfiable",
-        500 => "Internal Server Error",
         _ => "Unknown",
     };
-    let mut head = format!("HTTP/1.1 {} {reason}\r\n", response.status().as_u16());
-    for (name, value) in response.headers().iter() {
-        if name == tauri::http::header::CONTENT_LENGTH {
-            continue;
-        }
-        head.push_str(&format!(
-            "{}: {}\r\n",
-            name.as_str(),
-            String::from_utf8_lossy(value.as_bytes())
-        ));
+    let mut head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {mime}\r\nAccept-Ranges: bytes\r\nContent-Length: {len}\r\n"
+    );
+    if let Some(range) = content_range {
+        head.push_str(&format!("Content-Range: {range}\r\n"));
     }
-    let body = response.into_body();
-    head.push_str(&format!(
-        "Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    ));
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(&body);
-    let _ = stream.flush();
+    head.push_str("Connection: close\r\n\r\n");
+    stream.write_all(head.as_bytes())
+}
+
+// Stream a byte range of a file straight off disk — a multi-gigabyte video
+// must never be buffered into memory just to answer one request.
+fn stream_file_range(
+    mut stream: &TcpStream,
+    path: &Path,
+    offset: u64,
+    len: u64,
+) -> std::io::Result<()> {
+    let mut file = fs::File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut remaining = len;
+    let mut buf = vec![0u8; 256 * 1024];
+    while remaining > 0 {
+        let want = remaining.min(buf.len() as u64) as usize;
+        let n = file.read(&mut buf[..want])?;
+        if n == 0 {
+            break;
+        }
+        stream.write_all(&buf[..n])?;
+        remaining -= n as u64;
+    }
+    Ok(())
+}
+
+// A fully cached file: answer any range by streaming it.
+fn serve_media_file(mut stream: &TcpStream, path: &Path, name: &str, range: Option<ByteRange>) {
+    let total = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if total == 0 {
+        let _ = write_http_head(stream, 404, "text/plain", 9, None);
+        let _ = stream.write_all(b"not found");
+        return;
+    }
+    let mime = mime_for(name);
+    let (offset, len, status, content_range) = match range {
+        None => (0, total, 200u16, None),
+        Some(ByteRange::From { start, end }) => {
+            let start = start as u64;
+            let end = end.map(|e| e as u64);
+            if start >= total {
+                let _ = write_http_head(
+                    stream,
+                    416,
+                    "text/plain",
+                    21,
+                    Some(format!("bytes */{total}")),
+                );
+                let _ = stream.write_all(b"range not satisfiable");
+                return;
+            }
+            let end = end.unwrap_or(total - 1).min(total - 1).max(start);
+            (
+                start,
+                end - start + 1,
+                206u16,
+                Some(format!("bytes {start}-{end}/{total}")),
+            )
+        }
+        Some(ByteRange::Last(n)) => {
+            let n = (n as u64).min(total);
+            (
+                total - n,
+                n,
+                206u16,
+                Some(format!("bytes {}-{}/{total}", total - n, total - 1)),
+            )
+        }
+    };
+    if write_http_head(stream, status, mime, len, content_range).is_ok() {
+        let _ = stream_file_range(stream, path, offset, len);
+    }
+}
+
+fn serve_part_prefix(
+    stream: &TcpStream,
+    part_path: &Path,
+    name: &str,
+    start: u64,
+    end_inclusive: u64,
+    total: u64,
+) {
+    let len = end_inclusive - start + 1;
+    let content_range = format!("bytes {start}-{end_inclusive}/{total}");
+    if write_http_head(stream, 206, mime_for(name), len, Some(content_range)).is_ok() {
+        let _ = stream_file_range(stream, part_path, start, len);
+    }
+}
+
+// An in-flight download: the sequential prefix [0, received) and, for videos,
+// the fetched tail are served; holes between them are never sent.
+fn serve_media_partial(
+    mut stream: &TcpStream,
+    dir: &Path,
+    name: &str,
+    range: Option<ByteRange>,
+    shared: Arc<TaskShared>,
+) {
+    let final_path = dir.join(name);
+    let part_path = dir.join(partial_name(name));
+    if matches!(shared.inner.lock().unwrap().status, TaskStatus::Failed(_, _)) {
+        let _ = write_http_head(stream, 404, "text/plain", 9, None);
+        let _ = stream.write_all(b"not found");
+        return;
+    }
+    let complete = || serve_media_file(stream, &final_path, name, range);
+    match range {
+        // Plain load: answer with the prefix already on disk as a partial
+        // response; the media stack continues with ranged requests.
+        None => match wait_for_bytes(&shared, 1, RANGE_WAIT_SECS) {
+            Err(()) => {
+                let _ = write_http_head(stream, 408, "text/plain", 25, None);
+                let _ = stream.write_all(b"download still in progress");
+            }
+            Ok(TaskStatus::Done) => complete(),
+            Ok(TaskStatus::Failed(_, _)) => {
+                let _ = write_http_head(stream, 404, "text/plain", 9, None);
+                let _ = stream.write_all(b"not found");
+            }
+            Ok(TaskStatus::Running) => {
+                let inner = shared.inner.lock().unwrap();
+                let (received, total) = (inner.received, inner.total);
+                drop(inner);
+                match total {
+                    // Without a known length no valid Content-Range exists.
+                    Some(total) => serve_part_prefix(stream, &part_path, name, 0, received - 1, total),
+                    None => {
+                        let _ = write_http_head(stream, 408, "text/plain", 25, None);
+                        let _ = stream.write_all(b"download still in progress");
+                    }
+                }
+            }
+        },
+        Some(ByteRange::From { start, end }) => {
+            let start = start as u64;
+            let end = end.map(|e| e as u64);
+            let snapshot = {
+                let inner = shared.inner.lock().unwrap();
+                (inner.tail_start, inner.tail_done, inner.total)
+            };
+            if let (Some(total), Some(tail_start), true) = (snapshot.2, snapshot.0, snapshot.1) {
+                if start >= tail_start {
+                    let end = end.unwrap_or(total - 1).min(total - 1).max(start);
+                    serve_part_prefix(stream, &part_path, name, start, end, total);
+                    return;
+                }
+            }
+            match wait_for_bytes(&shared, start + 1, RANGE_WAIT_SECS) {
+                Err(()) => {
+                    let _ = write_http_head(stream, 408, "text/plain", 25, None);
+                    let _ = stream.write_all(b"download still in progress");
+                }
+                Ok(TaskStatus::Done) => complete(),
+                Ok(TaskStatus::Failed(_, _)) => {
+                    let _ = write_http_head(stream, 404, "text/plain", 9, None);
+                    let _ = stream.write_all(b"not found");
+                }
+                Ok(TaskStatus::Running) => {
+                    let inner = shared.inner.lock().unwrap();
+                    let (received, total) = (inner.received, inner.total);
+                    drop(inner);
+                    match total {
+                        Some(total) => {
+                            serve_part_prefix(stream, &part_path, name, start, received - 1, total)
+                        }
+                        None => {
+                            let _ = write_http_head(stream, 408, "text/plain", 25, None);
+                            let _ = stream.write_all(b"download still in progress");
+                        }
+                    }
+                }
+            }
+        }
+        Some(ByteRange::Last(n)) => {
+            let n = n as u64;
+            let outcome = wait_for_total(&shared, RANGE_WAIT_SECS);
+            let (status, total) = match outcome {
+                Ok(pair) => pair,
+                Err(()) => {
+                    let _ = write_http_head(stream, 408, "text/plain", 25, None);
+                    let _ = stream.write_all(b"download still in progress");
+                    return;
+                }
+            };
+            let Some(total) = total else {
+                // Unknown length: only the finished file can answer.
+                match wait_for_task(&shared, RANGE_WAIT_SECS) {
+                    Ok(TaskStatus::Done) => complete(),
+                    _ => {
+                        let _ = write_http_head(stream, 404, "text/plain", 9, None);
+                        let _ = stream.write_all(b"not found");
+                    }
+                }
+                return;
+            };
+            if matches!(status, TaskStatus::Done) {
+                complete();
+                return;
+            }
+            if matches!(status, TaskStatus::Failed(_, _)) {
+                let _ = write_http_head(stream, 404, "text/plain", 9, None);
+                let _ = stream.write_all(b"not found");
+                return;
+            }
+            let snapshot = {
+                let inner = shared.inner.lock().unwrap();
+                (inner.tail_start, inner.tail_done)
+            };
+            let tail_covered = matches!(snapshot.0, Some(ts) if snapshot.1 && n <= total - ts);
+            if tail_covered {
+                serve_part_prefix(stream, &part_path, name, total - n, total - 1, total);
+                return;
+            }
+            match wait_for_bytes(&shared, total - n + 1, RANGE_WAIT_SECS) {
+                Err(()) => {
+                    let _ = write_http_head(stream, 408, "text/plain", 25, None);
+                    let _ = stream.write_all(b"download still in progress");
+                }
+                Ok(TaskStatus::Done) => complete(),
+                Ok(TaskStatus::Failed(_, _)) => {
+                    let _ = write_http_head(stream, 404, "text/plain", 9, None);
+                    let _ = stream.write_all(b"not found");
+                }
+                // The sequential writer has reached the requested tail bytes.
+                Ok(TaskStatus::Running) => {
+                    serve_part_prefix(stream, &part_path, name, total - n, total - 1, total);
+                }
+            }
+        }
+    }
 }
 
 #[tauri::command]

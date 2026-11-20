@@ -84,7 +84,7 @@ No routing, no pages to navigate between; the back gesture means "close the over
 - **Navigation**: ‹ › hover zones on the edges + `←`/`→`/`j`/`k` step through the current result list; the info line updates in place. Reaching the end of the loaded list fetches the next page automatically.
 - **Info line**: score, rating badge, dimensions, date; **[Original]** toggle when a sample exists.
 - **Tags** as chips (flat list; the API provides no type grouping). **Click** = search that tag; **Ctrl+click** = append to the current query; **Shift+click** = append negated (`-tag`).
-- Video posts (`mp4/webm/mov/mkv/m4v`): played in the lightbox with native controls (the original/sample toggle does not apply). Playback starts while the file is still downloading. Videos load from a loopback HTTP server serving the same cache — the webview's media stack cannot fetch over the asset protocol (WebKit bug 146351).
+- Video posts (`mp4/webm/mov/mkv/m4v`): played in the lightbox with native controls (the original/sample toggle does not apply). Playback starts while the file is still downloading — the file's tail (MP4 metadata) is fetched first and ranged reads of what is on disk are served as they land; a download-percentage note shows until playback begins. Videos load from a loopback HTTP server serving the same cache — the webview's media stack cannot fetch over the asset protocol (WebKit bug 146351).
 
 ### 3.3 Settings (slide-over, right side, 360px)
 

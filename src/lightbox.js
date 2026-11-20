@@ -79,6 +79,7 @@ function clearMedia() {
   el.video.load();
   el.video.hidden = true;
   el.videoNote.hidden = true;
+  el.videoNote.classList.remove("progress");
   el.ghost.removeAttribute("src");
   el.ghost.hidden = true;
   mediaError = false;
@@ -135,6 +136,7 @@ async function loadMedia(url, token, isVideo) {
     el.video.src = base ? `${base}/${prep.name}` : "";
     el.video.hidden = false;
     el.spinner.hidden = true;
+    trackVideoProgress(prep.name, token);
     el.video.play().catch(() => {});
     return;
   }
@@ -229,6 +231,7 @@ function showLoadError(token) {
   el.img.hidden = true;
   el.video.hidden = true;
   el.videoNote.replaceChildren();
+  el.videoNote.classList.remove("progress");
   const label = document.createElement("span");
   label.textContent = "Media failed to load.";
   const retry = document.createElement("button");
@@ -243,11 +246,37 @@ function showLoadError(token) {
 function flashNote(text) {
   if (mediaError) return;
   clearTimeout(noteTimer);
+  el.videoNote.classList.remove("progress");
   el.videoNote.textContent = text;
   el.videoNote.hidden = false;
   noteTimer = setTimeout(() => {
     el.videoNote.hidden = true;
   }, 3000);
+}
+
+// Download percentage under the video until playback begins. A cached video
+// starts fast enough that the note never appears; once a failure happened,
+// showLoadError owns the note instead.
+function trackVideoProgress(name, token) {
+  const tick = () => {
+    if (token !== loadToken || mediaError) return;
+    if (el.video.currentTime > 0 || !el.video.paused) {
+      el.videoNote.hidden = true;
+      el.videoNote.classList.remove("progress");
+      return;
+    }
+    const p = progress.get(name);
+    if (p && !p.done && p.total) {
+      el.videoNote.textContent = `Loading video — ${Math.floor((p.received / p.total) * 100)}%`;
+      el.videoNote.hidden = false;
+      el.videoNote.classList.add("progress");
+    } else {
+      el.videoNote.hidden = true;
+      el.videoNote.classList.remove("progress");
+    }
+    setTimeout(tick, 200);
+  };
+  tick();
 }
 
 function renderInfo(post) {
